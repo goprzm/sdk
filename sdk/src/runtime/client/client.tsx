@@ -286,14 +286,28 @@ export const initClient = async ({
   function Content() {
     const [streamData, setStreamData] = React.useState(rscPayload);
     const [_isPending, startTransition] = React.useTransition();
-    transportContext.setRscPayload = (v) =>
+    transportContext.setRscPayload = (v) => {
+      document.getElementById('hydrate-root')?.setAttribute('data-rwsdk-hydrated', 'pending');
       startTransition(() => {
         setStreamData(v);
       });
+    };
 
     React.useEffect(() => {
       if (!streamData) return;
       transportContext.onHydrated?.();
+      // Signal that hydration is complete and the page is interactive.
+      // requestIdleCallback ensures React has finished reconciling the DOM
+      // and attaching event handlers before we mark the page as ready.
+      if (typeof requestIdleCallback !== 'undefined') {
+        requestIdleCallback(() => {
+          document.getElementById('hydrate-root')?.setAttribute('data-rwsdk-hydrated', 'true');
+        });
+      } else {
+        setTimeout(() => {
+          document.getElementById('hydrate-root')?.setAttribute('data-rwsdk-hydrated', 'true');
+        }, 0);
+      }
     }, [streamData]);
     return (
       <>
