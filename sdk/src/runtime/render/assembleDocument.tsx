@@ -34,7 +34,7 @@ export const assembleDocument = ({
         dangerouslySetInnerHTML={{
           __html: `globalThis.__RWSDK_CONTEXT = ${JSON.stringify(
             clientContext,
-          )}`,
+          )};document.documentElement.dataset.hydrated="pending"`,
         }}
       />
       <Stylesheets requestInfo={requestInfo} />

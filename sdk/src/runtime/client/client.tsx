@@ -288,12 +288,18 @@ export const initClient = async ({
     const [_isPending, startTransition] = React.useTransition();
     transportContext.setRscPayload = (v) =>
       startTransition(() => {
+        document.documentElement.dataset.hydrated = "navigating";
         setStreamData(v);
       });
 
     React.useEffect(() => {
       if (!streamData) return;
       transportContext.onHydrated?.();
+
+      document.documentElement.dataset.hydrated = "true";
+      (globalThis as any).__RWSDK_HYDRATED__ = true;
+      document.dispatchEvent(new CustomEvent("rwsdk:hydrated"));
+      performance.mark("rwsdk:hydration-complete");
     }, [streamData]);
     return (
       <>
