@@ -533,7 +533,7 @@ describe("defineRoutes - Request Handling Behavior", () => {
   });
 
   describe("RSC Action Handling", () => {
-    it("should handle RSC actions before the first route definition", async () => {
+    it("should handle RSC actions after global middleware but before page rendering", async () => {
       const executionOrder: string[] = [];
 
       const middleware1 = (requestInfo: RequestInfo) => {
@@ -685,6 +685,60 @@ describe("defineRoutes - Request Handling Behavior", () => {
         "rscActionHandler",
         "PageComponent",
       ]);
+    });
+
+    it("should handle RSC actions after route-specific middleware", async () => {
+      const executionOrder: string[] = [];
+
+      const globalMiddleware = async (requestInfo: RequestInfo) => {
+        executionOrder.push("globalMiddleware");
+        requestInfo.ctx.user = { id: 1 };
+      };
+
+      const requireAdmin = async (requestInfo: RequestInfo) => {
+        executionOrder.push("requireAdmin");
+        if (!requestInfo.ctx.user?.isAdmin) {
+          return new Response("Forbidden", { status: 403 });
+        }
+      };
+
+      const AdminPage = () => {
+        executionOrder.push("AdminPage");
+        return React.createElement("div", {}, "Admin");
+      };
+
+      const router = defineRoutes([
+        globalMiddleware,
+        route("/admin/", [requireAdmin, AdminPage]),
+      ]);
+
+      const deps = createMockDependencies();
+      deps.mockRequestInfo.request = new Request(
+        "http://localhost:3000/admin/?__rsc_action_id=test",
+      );
+      deps.mockRscActionHandler = async (request: Request) => {
+        executionOrder.push("rscActionHandler");
+        return { actionResult: "test-result" };
+      };
+
+      const request = new Request(
+        "http://localhost:3000/admin/?__rsc_action_id=test",
+      );
+      const response = await router.handle({
+        request,
+        renderPage: deps.mockRenderPage,
+        getRequestInfo: deps.getRequestInfo,
+        onError: deps.onError,
+        runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+        rscActionHandler: deps.mockRscActionHandler,
+      });
+
+      // requireAdmin should short-circuit before the action runs
+      expect(executionOrder).toEqual([
+        "globalMiddleware",
+        "requireAdmin",
+      ]);
+      expect(response.status).toBe(403);
     });
   });
 
