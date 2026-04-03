@@ -75,6 +75,10 @@ export async function navigate(
     return;
   }
 
+  if ("__RWSDK_STABLE__" in window) {
+    window.__RWSDK_STABLE__ = false;
+  }
+
   saveScrollPosition(window.scrollX, window.scrollY);
 
   const url = new URL(href, window.location.href);

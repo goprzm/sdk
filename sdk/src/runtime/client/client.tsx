@@ -33,6 +33,67 @@ import type {
 } from "./types";
 import { isActionResponse } from "./types";
 
+let _rwsdkRenderGeneration = 0;
+
+function installStabilityDetector() {
+  window.__RWSDK_STABLE__ = false;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hook: any = ((window as any).__REACT_DEVTOOLS_GLOBAL_HOOK__ ??= {
+    supportsFiber: true,
+    inject() {
+      return 1;
+    },
+    onCommitFiberRoot() {},
+    onPostCommitFiberRoot() {},
+    onCommitFiberUnmount() {},
+  });
+
+  const origCommit = hook.onCommitFiberRoot?.bind(hook);
+  const origPost = hook.onPostCommitFiberRoot?.bind(hook);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  hook.onCommitFiberRoot = (rendererID: number, root: any, ...rest: any[]) => {
+    window.__RWSDK_STABLE__ = false;
+    origCommit?.(rendererID, root, ...rest);
+  };
+
+  hook.onPostCommitFiberRoot = (
+    rendererID: number,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root: any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ...rest: any[]
+  ) => {
+    origPost?.(rendererID, root, ...rest);
+    try {
+      const pending = root.current?.pendingLanes ?? 0;
+      const suspended = root.current?.suspendedLanes ?? 0;
+      if (pending === 0 && suspended === 0) {
+        setTimeout(() => {
+          requestAnimationFrame(() => {
+            try {
+              const p2 = root.current?.pendingLanes ?? 0;
+              if (p2 === 0) {
+                window.__RWSDK_STABLE__ = true;
+                window.dispatchEvent(
+                  new CustomEvent("rwsdk:stable", {
+                    detail: { generation: _rwsdkRenderGeneration },
+                  }),
+                );
+              }
+            } catch {
+              // Resilience against React internal changes
+            }
+          });
+        }, 0);
+      }
+    } catch {
+      // Resilience against React internal changes
+    }
+  };
+}
+
 export const fetchTransport: Transport = (transportContext) => {
   const fetchCallServer = async <Result,>(
     id: null | string,
@@ -227,13 +288,18 @@ export const initClient = async ({
   handleResponse,
   onHydrated,
   onActionResponse,
+  detectStability = false,
 }: {
   transport?: Transport;
   hydrateRootOptions?: HydrationOptions;
   handleResponse?: (response: Response) => boolean;
   onHydrated?: () => void;
   onActionResponse?: (actionResponse: ActionResponseData) => boolean | void;
+  detectStability?: boolean;
 } = {}) => {
+  if (detectStability) {
+    installStabilityDetector();
+  }
   const transportContext: TransportContext = {
     setRscPayload: () => { },
     handleResponse,
@@ -286,13 +352,26 @@ export const initClient = async ({
   function Content() {
     const [streamData, setStreamData] = React.useState(rscPayload);
     const [_isPending, startTransition] = React.useTransition();
-    transportContext.setRscPayload = (v) =>
+    transportContext.setRscPayload = (v) => {
+      if ("__RWSDK_STABLE__" in window) {
+        window.__RWSDK_STABLE__ = false;
+      }
       startTransition(() => {
         setStreamData(v);
       });
+    };
 
     React.useEffect(() => {
       if (!streamData) return;
+      _rwsdkRenderGeneration++;
+      document.documentElement.dataset.rwsdkRender = String(
+        _rwsdkRenderGeneration,
+      );
+      window.dispatchEvent(
+        new CustomEvent("rwsdk:render-committed", {
+          detail: { generation: _rwsdkRenderGeneration, url: location.href },
+        }),
+      );
       transportContext.onHydrated?.();
     }, [streamData]);
     return (

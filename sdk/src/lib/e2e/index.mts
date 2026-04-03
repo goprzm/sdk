@@ -11,3 +11,4 @@ export {
   SKIP_DEV_SERVER_TESTS,
 } from "./testHarness.mjs";
 export * from "./types.mjs";
+export * from "./stability.mjs";
