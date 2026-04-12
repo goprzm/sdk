@@ -11,4 +11,4 @@ export type {
 } from "./client-core.js";
 
 // Re-export useSyncedState (no circular dependency since useSyncedState imports from client-core, not client)
-export { useSyncedState } from "./useSyncedState.js";
+export { useSyncedState, createSyncedStateHook } from "./useSyncedState.js";
