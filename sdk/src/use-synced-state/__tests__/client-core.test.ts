@@ -41,6 +41,7 @@ function makeMockClient() {
 import {
   getSyncedStateClient,
   setSyncedStateClientForTesting,
+  onStatusChange,
   __testing,
 } from "../client-core";
 
@@ -63,6 +64,7 @@ describe("client-core reconnection", () => {
     __testing.clientCache.clear();
     __testing.activeSubscriptions.clear();
     __testing.backoffState.clear();
+    __testing.statusListeners.clear();
     vi.useRealTimers();
   });
 
@@ -243,5 +245,69 @@ describe("client-core reconnection", () => {
     expect(newClient.subscribe).toHaveBeenCalledWith("score", handler2);
     expect(newClient.getState).toHaveBeenCalledWith("counter");
     expect(newClient.getState).toHaveBeenCalledWith("score");
+  });
+
+  describe("onStatusChange", () => {
+    const ENDPOINT = "wss://test.example.com/__synced-state";
+
+    it("fires 'disconnected' immediately when connection breaks", () => {
+      getSyncedStateClient(ENDPOINT);
+      const statusCb = vi.fn();
+      onStatusChange(ENDPOINT, statusCb);
+
+      mockClients[0].simulateBreak();
+
+      expect(statusCb).toHaveBeenCalledWith("disconnected");
+    });
+
+    it("fires 'reconnecting' then 'connected' when reconnect completes", () => {
+      getSyncedStateClient(ENDPOINT);
+      const statusCb = vi.fn();
+      onStatusChange(ENDPOINT, statusCb);
+
+      mockClients[0].simulateBreak();
+      statusCb.mockClear();
+
+      vi.advanceTimersByTime(1000);
+
+      expect(statusCb).toHaveBeenCalledTimes(2);
+      expect(statusCb).toHaveBeenNthCalledWith(1, "reconnecting");
+      expect(statusCb).toHaveBeenNthCalledWith(2, "connected");
+    });
+
+    it("fires full lifecycle: disconnected → reconnecting → connected", () => {
+      getSyncedStateClient(ENDPOINT);
+      const statuses: string[] = [];
+      onStatusChange(ENDPOINT, (s) => statuses.push(s));
+
+      mockClients[0].simulateBreak();
+      vi.advanceTimersByTime(1000);
+
+      expect(statuses).toEqual(["disconnected", "reconnecting", "connected"]);
+    });
+
+    it("returns an unsubscribe function that stops notifications", () => {
+      getSyncedStateClient(ENDPOINT);
+      const statusCb = vi.fn();
+      const unsub = onStatusChange(ENDPOINT, statusCb);
+
+      unsub();
+      mockClients[0].simulateBreak();
+
+      expect(statusCb).not.toHaveBeenCalled();
+    });
+
+    it("supports multiple listeners on the same endpoint", () => {
+      getSyncedStateClient(ENDPOINT);
+      const cb1 = vi.fn();
+      const cb2 = vi.fn();
+      onStatusChange(ENDPOINT, cb1);
+      onStatusChange(ENDPOINT, cb2);
+
+      mockClients[0].simulateBreak();
+
+      expect(cb1).toHaveBeenCalledWith("disconnected");
+      expect(cb2).toHaveBeenCalledWith("disconnected");
+    });
   });
 });

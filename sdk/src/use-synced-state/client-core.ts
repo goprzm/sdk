@@ -1,6 +1,9 @@
 import { newWebSocketRpcSession } from "capnweb";
 import { DEFAULT_SYNCED_STATE_PATH } from "./constants.mjs";
 
+export type SyncedStateStatus = "connected" | "disconnected" | "reconnecting";
+export type StatusChangeCallback = (status: SyncedStateStatus) => void;
+
 export type SyncedStateClient = {
   getState(key: string): Promise<unknown>;
   setState(value: unknown, key: string): Promise<void>;
@@ -20,6 +23,40 @@ type Subscription = {
 };
 
 const activeSubscriptions = new Set<Subscription>();
+
+// Status change listeners per endpoint
+const statusListeners = new Map<string, Set<StatusChangeCallback>>();
+
+function notifyStatusChange(endpoint: string, status: SyncedStateStatus) {
+  const listeners = statusListeners.get(endpoint);
+  if (listeners) {
+    for (const cb of listeners) {
+      cb(status);
+    }
+  }
+}
+
+/**
+ * Registers a callback that fires when the connection status changes for an endpoint.
+ * Returns an unsubscribe function.
+ */
+export const onStatusChange = (
+  endpoint: string,
+  callback: StatusChangeCallback,
+): (() => void) => {
+  let listeners = statusListeners.get(endpoint);
+  if (!listeners) {
+    listeners = new Set();
+    statusListeners.set(endpoint, listeners);
+  }
+  listeners.add(callback);
+  return () => {
+    listeners!.delete(callback);
+    if (listeners!.size === 0) {
+      statusListeners.delete(endpoint);
+    }
+  };
+};
 
 // Tracks per-endpoint reconnection backoff state
 const backoffState = new Map<string, { attempt: number; timer: ReturnType<typeof setTimeout> | null }>();
@@ -61,11 +98,15 @@ function reconnect(endpoint: string, deadClient: SyncedStateClient) {
     return;
   }
 
+  notifyStatusChange(endpoint, "disconnected");
+
   const delayMs = getBackoffMs(state.attempt);
   state.timer = setTimeout(() => {
     state.timer = null;
     state.attempt++;
     backoffState.set(endpoint, state);
+
+    notifyStatusChange(endpoint, "reconnecting");
 
     // Evict the dead client so getSyncedStateClient creates a fresh one
     clientCache.delete(endpoint);
@@ -87,6 +128,7 @@ function reconnect(endpoint: string, deadClient: SyncedStateClient) {
 
     // Reset backoff on successful reconnect
     backoffState.set(endpoint, { attempt: 0, timer: null });
+    notifyStatusChange(endpoint, "connected");
   }, delayMs);
 
   backoffState.set(endpoint, state);
@@ -198,6 +240,7 @@ export const setSyncedStateClientForTesting = (
     clientCache.delete(endpoint);
   }
   activeSubscriptions.clear();
+  statusListeners.clear();
   // Clear any pending reconnection timers
   for (const [, state] of backoffState) {
     if (state.timer !== null) {
@@ -212,6 +255,7 @@ export const __testing = {
   activeSubscriptions,
   clientCache,
   backoffState,
+  statusListeners,
   reconnect,
   getBackoffMs,
 };
