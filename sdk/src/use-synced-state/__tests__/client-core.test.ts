@@ -82,8 +82,8 @@ describe("client-core reconnection", () => {
     // Simulate connection break
     mockClients[0].simulateBreak();
 
-    // Reconnect happens after backoff (1s for first attempt)
-    vi.advanceTimersByTime(1000);
+    // Reconnect happens after backoff timer fires
+    vi.runOnlyPendingTimers();
 
     expect(mockClients).toHaveLength(2);
   });
@@ -96,10 +96,8 @@ describe("client-core reconnection", () => {
     // Before the timer fires, no new session yet
     expect(mockClients).toHaveLength(1);
 
-    vi.advanceTimersByTime(999);
-    expect(mockClients).toHaveLength(1);
-
-    vi.advanceTimersByTime(1);
+    // After timer fires, reconnect happens
+    vi.runOnlyPendingTimers();
     expect(mockClients).toHaveLength(2);
   });
 
@@ -113,7 +111,7 @@ describe("client-core reconnection", () => {
 
     // Simulate connection break
     mockClients[0].simulateBreak();
-    vi.advanceTimersByTime(1000);
+    vi.runOnlyPendingTimers();
 
     // The new client should have subscribe called with the same key and handler
     const newClient = mockClients[1];
@@ -129,7 +127,7 @@ describe("client-core reconnection", () => {
     await client.subscribe("counter", handler);
 
     mockClients[0].simulateBreak();
-    vi.advanceTimersByTime(1000);
+    vi.runOnlyPendingTimers();
 
     const newClient = mockClients[1];
     expect(newClient.getState).toHaveBeenCalledWith("counter");
@@ -151,7 +149,7 @@ describe("client-core reconnection", () => {
     });
 
     mockClients[0].simulateBreak();
-    vi.advanceTimersByTime(1000);
+    vi.runOnlyPendingTimers();
 
     // Allow the getState promise to resolve
     await vi.runAllTimersAsync();
@@ -169,7 +167,7 @@ describe("client-core reconnection", () => {
     handler.mockClear();
 
     mockClients[0].simulateBreak();
-    vi.advanceTimersByTime(1000);
+    vi.runOnlyPendingTimers();
 
     // Default mock returns undefined for getState
     await vi.runAllTimersAsync();
@@ -187,7 +185,7 @@ describe("client-core reconnection", () => {
     await client.unsubscribe("counter", handler);
 
     mockClients[0].simulateBreak();
-    vi.advanceTimersByTime(1000);
+    vi.runOnlyPendingTimers();
 
     const newClient = mockClients[1];
     expect(newClient.subscribe).not.toHaveBeenCalled();
@@ -200,20 +198,23 @@ describe("client-core reconnection", () => {
     mockClients[0].simulateBreak();
     mockClients[0].simulateBreak();
 
-    vi.advanceTimersByTime(1000);
+    vi.runOnlyPendingTimers();
 
     // Should only have created one new session
     expect(mockClients).toHaveLength(2);
   });
 
-  it("uses exponential backoff with a 30s cap", () => {
-    expect(__testing.getBackoffMs(0)).toBe(1000);
-    expect(__testing.getBackoffMs(1)).toBe(2000);
-    expect(__testing.getBackoffMs(2)).toBe(4000);
-    expect(__testing.getBackoffMs(3)).toBe(8000);
-    expect(__testing.getBackoffMs(4)).toBe(16000);
-    expect(__testing.getBackoffMs(5)).toBe(30000); // capped
-    expect(__testing.getBackoffMs(10)).toBe(30000); // still capped
+  it("uses exponential backoff with jitter and a 30s cap", () => {
+    // Backoff is base * (0.75..1.25) due to ±25% jitter, so we check ranges
+    const inRange = (val: number, min: number, max: number) =>
+      val >= min && val <= max;
+
+    expect(inRange(__testing.getBackoffMs(0), 750, 1250)).toBe(true);   // base 1000
+    expect(inRange(__testing.getBackoffMs(1), 1500, 2500)).toBe(true);  // base 2000
+    expect(inRange(__testing.getBackoffMs(2), 3000, 5000)).toBe(true);  // base 4000
+    expect(inRange(__testing.getBackoffMs(3), 6000, 10000)).toBe(true); // base 8000
+    expect(inRange(__testing.getBackoffMs(5), 22500, 30000)).toBe(true); // capped at 30000
+    expect(inRange(__testing.getBackoffMs(10), 22500, 30000)).toBe(true); // still capped
   });
 
   it("returns cached client on second call for same endpoint", () => {
@@ -238,7 +239,7 @@ describe("client-core reconnection", () => {
     await client.subscribe("score", handler2);
 
     mockClients[0].simulateBreak();
-    vi.advanceTimersByTime(1000);
+    vi.runOnlyPendingTimers();
 
     const newClient = mockClients[1];
     expect(newClient.subscribe).toHaveBeenCalledWith("counter", handler1);
@@ -268,7 +269,7 @@ describe("client-core reconnection", () => {
       mockClients[0].simulateBreak();
       statusCb.mockClear();
 
-      vi.advanceTimersByTime(1000);
+      vi.runOnlyPendingTimers();
 
       expect(statusCb).toHaveBeenCalledTimes(2);
       expect(statusCb).toHaveBeenNthCalledWith(1, "reconnecting");
@@ -281,7 +282,7 @@ describe("client-core reconnection", () => {
       onStatusChange(ENDPOINT, (s) => statuses.push(s));
 
       mockClients[0].simulateBreak();
-      vi.advanceTimersByTime(1000);
+      vi.runOnlyPendingTimers();
 
       expect(statuses).toEqual(["disconnected", "reconnecting", "connected"]);
     });

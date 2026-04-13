@@ -65,7 +65,10 @@ const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30000;
 
 function getBackoffMs(attempt: number): number {
-  return Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS);
+  const base = Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS);
+  // Add ±25% jitter to avoid thundering herd on server restart
+  const jitter = base * (0.75 + Math.random() * 0.5);
+  return Math.round(jitter);
 }
 
 // Set up beforeunload handler to unsubscribe all active subscriptions
