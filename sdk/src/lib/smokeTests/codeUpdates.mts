@@ -94,9 +94,9 @@ export async function createSmokeTestStylesheets(targetDir: string) {
   log("Creating smokeTestUrlStyles.css at: %s", urlStylesPath);
   await fs.writeFile(urlStylesPath, smokeTestUrlStylesCssTemplate);
 
-  // Modify Document.tsx to include the URL stylesheet using CSS URL import
-  const documentPath = join(appDir, "Document.tsx");
-  log("Modifying Document.tsx to include URL stylesheet at: %s", documentPath);
+  // Modify document.tsx to include the URL stylesheet using CSS URL import
+  const documentPath = join(appDir, "document.tsx");
+  log("Modifying document.tsx to include URL stylesheet at: %s", documentPath);
   try {
     const documentContent = await fs.readFile(documentPath, "utf-8");
     const s = new MagicString(documentContent);
@@ -118,12 +118,12 @@ export async function createSmokeTestStylesheets(targetDir: string) {
         '      <link rel="stylesheet" href={smokeTestUrlStyles} />\n',
       );
       await fs.writeFile(documentPath, s.toString(), "utf-8");
-      log("Successfully modified Document.tsx with CSS URL import pattern");
+      log("Successfully modified document.tsx with CSS URL import pattern");
     } else {
-      log("Could not find </head> tag in Document.tsx");
+      log("Could not find </head> tag in document.tsx");
     }
   } catch (e) {
-    log("Could not modify Document.tsx: %s", e);
+    log("Could not modify document.tsx: %s", e);
   }
 
   log("Smoke test stylesheets created successfully");

@@ -395,11 +395,16 @@ export function createDeployment() {
             resourceUniqueKey,
           );
 
+          // A fresh *.workers.dev subdomain can return 200 with Cloudflare's
+          // "There is nothing here yet" placeholder before the worker code
+          // propagates globally. Wait until the response body contains the
+          // rwsdk-rendered marker so tests don't run against the placeholder.
           await poll(
             async () => {
               try {
                 const response = await fetch(deployResult.url);
-                return response.status > 0;
+                const body = await response.text();
+                return body.includes("__RWSDK_CONTEXT");
               } catch (e) {
                 return false;
               }
