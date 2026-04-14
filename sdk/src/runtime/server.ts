@@ -18,10 +18,57 @@ type WrappedServerFunction<TArgs extends any[] = any[], TResult = any> = {
   method?: "GET" | "POST";
 };
 
+export type ServerFunctionWrap = (
+  fn: Function,
+  args: any[],
+  type: "action" | "query",
+) => Promise<any>;
+
+let globalWrap: ServerFunctionWrap | undefined;
+
+/**
+ * Register a wrapper that runs around every server action and query handler.
+ *
+ * Call this once in your worker entry point. The wrapper receives the main
+ * handler function, its arguments, and the type ("action" or "query").
+ * Interruptors run *outside* the wrapper.
+ *
+ * Throws if called more than once.
+ *
+ * @example
+ * ```ts
+ * import { registerServerFunctionWrap } from "rwsdk/worker";
+ * import * as Sentry from "@sentry/cloudflare";
+ *
+ * registerServerFunctionWrap((fn, args, type) =>
+ *   Sentry.startSpan(
+ *     { name: fn.name, op: `function.rsc_${type}` },
+ *     () => fn(...args)
+ *   )
+ * );
+ * ```
+ */
+export function registerServerFunctionWrap(wrap: ServerFunctionWrap) {
+  if (globalWrap) {
+    throw new Error(
+      "registerServerFunctionWrap() has already been called. " +
+        "Only one wrapper can be registered.",
+    );
+  }
+  globalWrap = wrap;
+}
+
+/**
+ * @internal Reset the global wrap — only for tests.
+ */
+export function __resetServerFunctionWrap() {
+  globalWrap = undefined;
+}
+
 function createServerFunction<TArgs extends any[] = any[], TResult = any>(
   fns: Interruptor<TArgs>[],
   mainFn: ServerFunction<TArgs, TResult>,
-  options?: ServerFunctionOptions,
+  options?: ServerFunctionOptions & { __type?: "action" | "query" },
 ): WrappedServerFunction<TArgs, TResult> {
   const wrapped: WrappedServerFunction<TArgs, TResult> = async (
     ...args: TArgs
@@ -36,6 +83,10 @@ function createServerFunction<TArgs extends any[] = any[], TResult = any>(
         // and serialized into the RSC stream via normalizeActionResult.
         return result as unknown as TResult;
       }
+    }
+
+    if (globalWrap) {
+      return globalWrap(mainFn, args, options?.__type ?? "action") as Promise<TResult>;
     }
 
     return mainFn(...args);
@@ -81,7 +132,7 @@ export function serverQuery<TArgs extends any[], TResult>(
   }
 
   const method = options?.method ?? "GET"; // Default to GET for query
-  const wrapped = createServerFunction(fns, mainFn, { ...options, method });
+  const wrapped = createServerFunction(fns, mainFn, { ...options, method, __type: "query" });
   wrapped.method = method;
   return wrapped;
 }
@@ -121,7 +172,7 @@ export function serverAction<TArgs extends any[], TResult>(
   }
 
   const method = options?.method ?? "POST"; // Default to POST for action
-  const wrapped = createServerFunction(fns, mainFn, { ...options, method });
+  const wrapped = createServerFunction(fns, mainFn, { ...options, method, __type: "action" });
   wrapped.method = method;
   return wrapped;
 }
