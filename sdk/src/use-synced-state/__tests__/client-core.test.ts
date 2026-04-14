@@ -311,4 +311,86 @@ describe("client-core reconnection", () => {
       expect(cb2).toHaveBeenCalledWith("disconnected");
     });
   });
+
+  // ============================================================
+  // REPRODUCTIONS: Failing tests demonstrating Copilot-flagged bugs
+  // ============================================================
+  describe("REPRO: bug reproductions", () => {
+    it("BUG: status listener registered with relative URL never fires because reconnect uses the normalized absolute URL", () => {
+      // Stub window so relative URLs get normalized inside getSyncedStateClient
+      vi.stubGlobal("window", {
+        location: { protocol: "https:", host: "example.com" },
+        addEventListener: () => {},
+      });
+
+      const RELATIVE = "/__synced-state";
+      const statusCb = vi.fn();
+
+      // This mirrors what useSyncedState.ts does: register listener with
+      // the same (relative) string it passes to getSyncedStateClient.
+      onStatusChange(RELATIVE, statusCb);
+      getSyncedStateClient(RELATIVE);
+
+      mockClients[0].simulateBreak();
+      vi.runOnlyPendingTimers();
+
+      // Expected: full lifecycle fires. Actual: nothing fires because
+      // reconnect notifies using "wss://example.com/__synced-state"
+      // but the listener is stored under "/__synced-state".
+      expect(statusCb).toHaveBeenCalledWith("disconnected");
+
+      vi.unstubAllGlobals();
+    });
+
+    it("BUG: unsubscribing one of two instances of the same callback removes it for all", () => {
+      const ENDPOINT = "wss://test.example.com/__synced-state";
+      getSyncedStateClient(ENDPOINT);
+
+      // Simulate two React components sharing the same onStatusChange
+      // callback (the case when createSyncedStateHook({ onStatusChange })
+      // is used by multiple component instances).
+      const sharedCallback = vi.fn();
+      const unsubA = onStatusChange(ENDPOINT, sharedCallback);
+      const unsubB = onStatusChange(ENDPOINT, sharedCallback);
+
+      // Component A unmounts
+      unsubA();
+
+      // Component B is still mounted and should still receive updates
+      mockClients[0].simulateBreak();
+
+      // Expected: callback fires once (for B). Actual: fires zero times
+      // because Set.delete removed the single shared entry.
+      expect(sharedCallback).toHaveBeenCalledWith("disconnected");
+
+      unsubB();
+    });
+
+    it("BUG: reconnect emits 'connected' and resets backoff even when subscribe() rejects", async () => {
+      const ENDPOINT = "wss://test.example.com/__synced-state";
+      const client = getSyncedStateClient(ENDPOINT);
+      const handler = vi.fn();
+
+      await client.subscribe("counter", handler);
+
+      // Next client's subscribe will reject
+      newWebSocketRpcSession.mockImplementationOnce(() => {
+        const c = makeMockClient();
+        c.subscribe.mockRejectedValue(new Error("subscribe failed"));
+        return c;
+      });
+
+      const statuses: string[] = [];
+      onStatusChange(ENDPOINT, (s) => statuses.push(s));
+
+      mockClients[0].simulateBreak();
+      vi.runOnlyPendingTimers();
+      await vi.runAllTimersAsync();
+
+      // Expected: on failure, we should NOT claim connected and NOT reset backoff.
+      // Actual: "connected" fires and backoff resets to 0 despite the failure.
+      expect(statuses).not.toContain("connected");
+      expect(__testing.backoffState.get(ENDPOINT)?.attempt ?? 0).toBeGreaterThan(0);
+    });
+  });
 });
