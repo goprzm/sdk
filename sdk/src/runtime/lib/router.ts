@@ -408,8 +408,11 @@ export function defineRoutes<T extends RequestInfo = RequestInfo>(
       async function handleMiddlewareResult(
         result: Response | React.JSX.Element | void,
       ): Promise<Response | undefined> {
-        if (result instanceof Response) {
-          return result;
+        // NOTE: instanceof fails for cross-realm Responses (e.g. Response.json()
+        // in Cloudflare's vite dev mode constructs from a different realm's
+        // prototype). Fall back to constructor.name check.
+        if (result instanceof Response || result?.constructor?.name === 'Response') {
+          return result as Response;
         }
         if (result && React.isValidElement(result)) {
           return await renderElement(result);
