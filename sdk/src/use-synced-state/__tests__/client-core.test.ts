@@ -261,7 +261,7 @@ describe("client-core reconnection", () => {
       expect(statusCb).toHaveBeenCalledWith("disconnected");
     });
 
-    it("fires 'reconnecting' then 'connected' when reconnect completes", () => {
+    it("fires 'reconnecting' then 'connected' when reconnect completes", async () => {
       getSyncedStateClient(ENDPOINT);
       const statusCb = vi.fn();
       onStatusChange(ENDPOINT, statusCb);
@@ -270,19 +270,21 @@ describe("client-core reconnection", () => {
       statusCb.mockClear();
 
       vi.runOnlyPendingTimers();
+      await vi.runAllTimersAsync();
 
       expect(statusCb).toHaveBeenCalledTimes(2);
       expect(statusCb).toHaveBeenNthCalledWith(1, "reconnecting");
       expect(statusCb).toHaveBeenNthCalledWith(2, "connected");
     });
 
-    it("fires full lifecycle: disconnected → reconnecting → connected", () => {
+    it("fires full lifecycle: disconnected → reconnecting → connected", async () => {
       getSyncedStateClient(ENDPOINT);
       const statuses: string[] = [];
       onStatusChange(ENDPOINT, (s) => statuses.push(s));
 
       mockClients[0].simulateBreak();
       vi.runOnlyPendingTimers();
+      await vi.runAllTimersAsync();
 
       expect(statuses).toEqual(["disconnected", "reconnecting", "connected"]);
     });

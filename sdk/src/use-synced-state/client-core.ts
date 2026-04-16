@@ -11,6 +11,17 @@ export type SyncedStateClient = {
   unsubscribe(key: string, handler: (value: unknown) => void): Promise<void>;
 };
 
+// Converts a relative endpoint like "/__synced-state" to an absolute
+// ws:// or wss:// URL so the same key is used by getSyncedStateClient,
+// onStatusChange, and reconnect notifications.
+function normalizeEndpoint(endpoint: string): string {
+  if (endpoint.startsWith("/") && typeof window !== "undefined") {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}${endpoint}`;
+  }
+  return endpoint;
+}
+
 // Map of endpoint URLs to their respective clients
 const clientCache = new Map<string, SyncedStateClient>();
 
@@ -24,13 +35,17 @@ type Subscription = {
 
 const activeSubscriptions = new Set<Subscription>();
 
-// Status change listeners per endpoint
-const statusListeners = new Map<string, Set<StatusChangeCallback>>();
+// Status change listeners per endpoint. Uses an array rather than a Set so
+// that two components passing the same callback reference (e.g. via
+// createSyncedStateHook({ onStatusChange })) are tracked as two separate
+// registrations — unsubscribing one must not cancel the other.
+const statusListeners = new Map<string, StatusChangeCallback[]>();
 
 function notifyStatusChange(endpoint: string, status: SyncedStateStatus) {
   const listeners = statusListeners.get(endpoint);
   if (listeners) {
-    for (const cb of listeners) {
+    // Snapshot so unsubscribes fired by callbacks don't skip entries.
+    for (const cb of [...listeners]) {
       cb(status);
     }
   }
@@ -44,16 +59,20 @@ export const onStatusChange = (
   endpoint: string,
   callback: StatusChangeCallback,
 ): (() => void) => {
-  let listeners = statusListeners.get(endpoint);
+  const normalized = normalizeEndpoint(endpoint);
+  let listeners = statusListeners.get(normalized);
   if (!listeners) {
-    listeners = new Set();
-    statusListeners.set(endpoint, listeners);
+    listeners = [];
+    statusListeners.set(normalized, listeners);
   }
-  listeners.add(callback);
+  listeners.push(callback);
   return () => {
-    listeners!.delete(callback);
-    if (listeners!.size === 0) {
-      statusListeners.delete(endpoint);
+    const idx = listeners!.indexOf(callback);
+    if (idx !== -1) {
+      listeners!.splice(idx, 1);
+    }
+    if (listeners!.length === 0) {
+      statusListeners.delete(normalized);
     }
   };
 };
@@ -115,12 +134,16 @@ function reconnect(endpoint: string, deadClient: SyncedStateClient) {
     clientCache.delete(endpoint);
     const newClient = getSyncedStateClient(endpoint);
 
-    // Re-subscribe everything that was on the dead client
+    // Re-subscribe everything that was on the dead client. Kick off both
+    // subscribe() and getState() synchronously so callers see the calls
+    // happen inside the timer tick, but only confirm "connected" once the
+    // subscribe promises resolve — otherwise a rejected resubscription
+    // would be masked as a successful reconnect.
+    const subscribePromises: Promise<void>[] = [];
     for (const sub of activeSubscriptions) {
       if (sub.client === deadClient) {
         sub.client = newClient;
-        void newClient.subscribe(sub.key, sub.handler);
-        // Fetch latest state since we may have missed updates while disconnected
+        subscribePromises.push(newClient.subscribe(sub.key, sub.handler));
         void newClient.getState(sub.key).then((val) => {
           if (val !== undefined) {
             sub.handler(val);
@@ -129,9 +152,19 @@ function reconnect(endpoint: string, deadClient: SyncedStateClient) {
       }
     }
 
-    // Reset backoff on successful reconnect
-    backoffState.set(endpoint, { attempt: 0, timer: null });
-    notifyStatusChange(endpoint, "connected");
+    Promise.all(subscribePromises).then(
+      () => {
+        backoffState.set(endpoint, { attempt: 0, timer: null });
+        notifyStatusChange(endpoint, "connected");
+      },
+      () => {
+        // Resubscription failed — leave the attempt counter elevated so
+        // the next reconnect uses a longer backoff, and emit disconnected
+        // again. A subsequent onRpcBroken from the new (likely dead)
+        // client will drive the next retry.
+        notifyStatusChange(endpoint, "disconnected");
+      },
+    );
   }, delayMs);
 
   backoffState.set(endpoint, state);
@@ -148,10 +181,7 @@ export const getSyncedStateClient = (
   endpoint: string = DEFAULT_SYNCED_STATE_PATH,
 ): SyncedStateClient => {
   // Convert relative endpoint to absolute URL for environments like WKWebView
-  if (endpoint.startsWith("/") && typeof window !== "undefined") {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    endpoint = `${protocol}//${window.location.host}${endpoint}`;
-  }
+  endpoint = normalizeEndpoint(endpoint);
 
   // Return existing client if already cached for this endpoint
   const existingClient = clientCache.get(endpoint);
