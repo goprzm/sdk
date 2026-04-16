@@ -166,13 +166,13 @@ initSyncedStateClient({
 
 ## Implementation Status
 
-**Status**: Planned (not yet implemented)
+**Connection status tracking and automatic reconnection**: Implemented.
 
-This document describes the intended design. Implementation will add:
+`client-core.ts` now hooks into capnweb's `onRpcBroken` callback to detect dead connections. On failure, it reconnects with exponential backoff (1s → 30s cap), re-subscribes all active subscriptions, and fetches the latest state for each key. An `onStatusChange` callback on `createSyncedStateHook` fires `"disconnected"`, `"reconnecting"`, and `"connected"` events so consumers can show connection status in the UI.
 
-- Connection manager module
+**Still planned (not yet implemented)**:
+
 - Pluggable queue interface and built-in implementations
-- Enhanced `useSyncedState` with retry logic
-- `useSyncedStateStatus` hook
-- Integration with existing WebSocket reconnection
-- Tests for error scenarios, retry logic, and queue flushing
+- Enhanced `useSyncedState` with retry logic for `setState` failures
+- `useSyncedStateStatus` hook (current approach uses a callback instead)
+- Offline queue persistence across page reloads
