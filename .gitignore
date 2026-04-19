@@ -207,9 +207,6 @@ starters/standard/.pnpm-store
 # Webstorm
 .idea/
 
-# Claude Code
-CLAUDE.md
-
 # Kindling task artifacts (worklogs, advisory drafts, debug logs)
 .notes/
 
