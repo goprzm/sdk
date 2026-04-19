@@ -262,4 +262,10 @@ describe("initClientNavigation", () => {
     expect(result).toBe(false);
     expect(window.location.href).toBe("http://localhost/");
   });
+
+  it("sets history.scrollRestoration to manual so the browser does not restore scroll before the RSC payload commits", () => {
+    history.scrollRestoration = "auto";
+    initClientNavigation();
+    expect(history.scrollRestoration).toBe("manual");
+  });
 });
