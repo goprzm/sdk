@@ -45,6 +45,8 @@ import {
   __testing,
 } from "../client-core";
 
+const ENDPOINT = "wss://test.example.com/__synced-state";
+
 describe("client-core reconnection", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -68,15 +70,17 @@ describe("client-core reconnection", () => {
     vi.useRealTimers();
   });
 
-  it("registers onRpcBroken callback when creating a client", () => {
-    getSyncedStateClient("wss://test.example.com/__synced-state");
+  it("registers onRpcBroken callback when creating a client", async () => {
+    getSyncedStateClient(ENDPOINT);
+    await __testing.warmUp(ENDPOINT);
 
     expect(mockClients).toHaveLength(1);
     expect(mockClients[0].onRpcBroken).toHaveBeenCalledOnce();
   });
 
-  it("creates a new client after connection breaks", () => {
-    getSyncedStateClient("wss://test.example.com/__synced-state");
+  it("creates a new client after connection breaks", async () => {
+    getSyncedStateClient(ENDPOINT);
+    await __testing.warmUp(ENDPOINT);
     expect(mockClients).toHaveLength(1);
 
     // Simulate connection break
@@ -84,12 +88,14 @@ describe("client-core reconnection", () => {
 
     // Reconnect happens after backoff timer fires
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     expect(mockClients).toHaveLength(2);
   });
 
-  it("does not reconnect immediately — waits for backoff", () => {
-    getSyncedStateClient("wss://test.example.com/__synced-state");
+  it("does not reconnect immediately — waits for backoff", async () => {
+    getSyncedStateClient(ENDPOINT);
+    await __testing.warmUp(ENDPOINT);
 
     mockClients[0].simulateBreak();
 
@@ -98,13 +104,12 @@ describe("client-core reconnection", () => {
 
     // After timer fires, reconnect happens
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
     expect(mockClients).toHaveLength(2);
   });
 
   it("re-subscribes active subscriptions after reconnect", async () => {
-    const client = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
+    const client = getSyncedStateClient(ENDPOINT);
     const handler = vi.fn();
 
     await client.subscribe("counter", handler);
@@ -112,6 +117,7 @@ describe("client-core reconnection", () => {
     // Simulate connection break
     mockClients[0].simulateBreak();
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     // The new client should have subscribe called with the same key and handler
     const newClient = mockClients[1];
@@ -119,24 +125,21 @@ describe("client-core reconnection", () => {
   });
 
   it("fetches latest state for each subscription after reconnect", async () => {
-    const client = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
+    const client = getSyncedStateClient(ENDPOINT);
     const handler = vi.fn();
 
     await client.subscribe("counter", handler);
 
     mockClients[0].simulateBreak();
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     const newClient = mockClients[1];
     expect(newClient.getState).toHaveBeenCalledWith("counter");
   });
 
   it("calls handler with fetched state when value is not undefined", async () => {
-    const client = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
+    const client = getSyncedStateClient(ENDPOINT);
     const handler = vi.fn();
 
     await client.subscribe("counter", handler);
@@ -150,6 +153,7 @@ describe("client-core reconnection", () => {
 
     mockClients[0].simulateBreak();
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     // Allow the getState promise to resolve
     await vi.runAllTimersAsync();
@@ -158,9 +162,7 @@ describe("client-core reconnection", () => {
   });
 
   it("does not call handler when fetched state is undefined", async () => {
-    const client = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
+    const client = getSyncedStateClient(ENDPOINT);
     const handler = vi.fn();
 
     await client.subscribe("counter", handler);
@@ -168,6 +170,7 @@ describe("client-core reconnection", () => {
 
     mockClients[0].simulateBreak();
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     // Default mock returns undefined for getState
     await vi.runAllTimersAsync();
@@ -176,9 +179,7 @@ describe("client-core reconnection", () => {
   });
 
   it("does not re-subscribe keys that were unsubscribed before reconnect", async () => {
-    const client = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
+    const client = getSyncedStateClient(ENDPOINT);
     const handler = vi.fn();
 
     await client.subscribe("counter", handler);
@@ -186,19 +187,22 @@ describe("client-core reconnection", () => {
 
     mockClients[0].simulateBreak();
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     const newClient = mockClients[1];
     expect(newClient.subscribe).not.toHaveBeenCalled();
   });
 
-  it("does not schedule multiple reconnects for the same endpoint", () => {
-    getSyncedStateClient("wss://test.example.com/__synced-state");
+  it("does not schedule multiple reconnects for the same endpoint", async () => {
+    getSyncedStateClient(ENDPOINT);
+    await __testing.warmUp(ENDPOINT);
 
     // Fire broken twice rapidly
     mockClients[0].simulateBreak();
     mockClients[0].simulateBreak();
 
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     // Should only have created one new session
     expect(mockClients).toHaveLength(2);
@@ -217,21 +221,16 @@ describe("client-core reconnection", () => {
     expect(inRange(__testing.getBackoffMs(10), 22500, 30000)).toBe(true); // still capped
   });
 
-  it("returns cached client on second call for same endpoint", () => {
-    const client1 = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
-    const client2 = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
+  it("returns cached client on second call for same endpoint", async () => {
+    const client1 = getSyncedStateClient(ENDPOINT);
+    const client2 = getSyncedStateClient(ENDPOINT);
     expect(client1).toBe(client2);
+    await __testing.warmUp(ENDPOINT);
     expect(mockClients).toHaveLength(1);
   });
 
   it("re-subscribes multiple subscriptions after reconnect", async () => {
-    const client = getSyncedStateClient(
-      "wss://test.example.com/__synced-state",
-    );
+    const client = getSyncedStateClient(ENDPOINT);
     const handler1 = vi.fn();
     const handler2 = vi.fn();
 
@@ -240,6 +239,7 @@ describe("client-core reconnection", () => {
 
     mockClients[0].simulateBreak();
     vi.runOnlyPendingTimers();
+    await __testing.warmUp(ENDPOINT);
 
     const newClient = mockClients[1];
     expect(newClient.subscribe).toHaveBeenCalledWith("counter", handler1);
@@ -249,10 +249,9 @@ describe("client-core reconnection", () => {
   });
 
   describe("onStatusChange", () => {
-    const ENDPOINT = "wss://test.example.com/__synced-state";
-
-    it("fires 'disconnected' immediately when connection breaks", () => {
+    it("fires 'disconnected' immediately when connection breaks", async () => {
       getSyncedStateClient(ENDPOINT);
+      await __testing.warmUp(ENDPOINT);
       const statusCb = vi.fn();
       onStatusChange(ENDPOINT, statusCb);
 
@@ -263,6 +262,7 @@ describe("client-core reconnection", () => {
 
     it("fires 'reconnecting' then 'connected' when reconnect completes", async () => {
       getSyncedStateClient(ENDPOINT);
+      await __testing.warmUp(ENDPOINT);
       const statusCb = vi.fn();
       onStatusChange(ENDPOINT, statusCb);
 
@@ -279,6 +279,7 @@ describe("client-core reconnection", () => {
 
     it("fires full lifecycle: disconnected → reconnecting → connected", async () => {
       getSyncedStateClient(ENDPOINT);
+      await __testing.warmUp(ENDPOINT);
       const statuses: string[] = [];
       onStatusChange(ENDPOINT, (s) => statuses.push(s));
 
@@ -289,8 +290,9 @@ describe("client-core reconnection", () => {
       expect(statuses).toEqual(["disconnected", "reconnecting", "connected"]);
     });
 
-    it("returns an unsubscribe function that stops notifications", () => {
+    it("returns an unsubscribe function that stops notifications", async () => {
       getSyncedStateClient(ENDPOINT);
+      await __testing.warmUp(ENDPOINT);
       const statusCb = vi.fn();
       const unsub = onStatusChange(ENDPOINT, statusCb);
 
@@ -300,8 +302,9 @@ describe("client-core reconnection", () => {
       expect(statusCb).not.toHaveBeenCalled();
     });
 
-    it("supports multiple listeners on the same endpoint", () => {
+    it("supports multiple listeners on the same endpoint", async () => {
       getSyncedStateClient(ENDPOINT);
+      await __testing.warmUp(ENDPOINT);
       const cb1 = vi.fn();
       const cb2 = vi.fn();
       onStatusChange(ENDPOINT, cb1);
@@ -318,7 +321,7 @@ describe("client-core reconnection", () => {
   // REPRODUCTIONS: Failing tests demonstrating Copilot-flagged bugs
   // ============================================================
   describe("REPRO: bug reproductions", () => {
-    it("BUG: status listener registered with relative URL never fires because reconnect uses the normalized absolute URL", () => {
+    it("BUG: status listener registered with relative URL never fires because reconnect uses the normalized absolute URL", async () => {
       // Stub window so relative URLs get normalized inside getSyncedStateClient
       vi.stubGlobal("window", {
         location: { protocol: "https:", host: "example.com" },
@@ -332,6 +335,7 @@ describe("client-core reconnection", () => {
       // the same (relative) string it passes to getSyncedStateClient.
       onStatusChange(RELATIVE, statusCb);
       getSyncedStateClient(RELATIVE);
+      await __testing.warmUp(RELATIVE);
 
       mockClients[0].simulateBreak();
       vi.runOnlyPendingTimers();
@@ -344,9 +348,9 @@ describe("client-core reconnection", () => {
       vi.unstubAllGlobals();
     });
 
-    it("BUG: unsubscribing one of two instances of the same callback removes it for all", () => {
-      const ENDPOINT = "wss://test.example.com/__synced-state";
+    it("BUG: unsubscribing one of two instances of the same callback removes it for all", async () => {
       getSyncedStateClient(ENDPOINT);
+      await __testing.warmUp(ENDPOINT);
 
       // Simulate two React components sharing the same onStatusChange
       // callback (the case when createSyncedStateHook({ onStatusChange })
@@ -369,7 +373,6 @@ describe("client-core reconnection", () => {
     });
 
     it("BUG: reconnect emits 'connected' and resets backoff even when subscribe() rejects", async () => {
-      const ENDPOINT = "wss://test.example.com/__synced-state";
       const client = getSyncedStateClient(ENDPOINT);
       const handler = vi.fn();
 

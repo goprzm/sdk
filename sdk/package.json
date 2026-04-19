@@ -1,6 +1,6 @@
 {
   "name": "rwsdk",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Build fast, server-driven webapps on Cloudflare with SSR, RSC, and realtime",
   "type": "module",
   "bin": {
@@ -200,6 +200,11 @@
     "react-server-dom-webpack": ">=19.2.0-0 <19.3.0 || >=19.3.0-0 <20.0.0",
     "vite": "^6.2.6 || 7.x",
     "wrangler": "^4.77.0"
+  },
+  "peerDependenciesMeta": {
+    "capnweb": {
+      "optional": true
+    }
   },
   "packageManager": "pnpm@10.31.0",
   "devDependencies": {
