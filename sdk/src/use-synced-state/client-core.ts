@@ -1,4 +1,4 @@
-import { newWebSocketRpcSession } from "capnweb";
+import { loadCapnweb } from "./capnweb-loader.mjs";
 import { DEFAULT_SYNCED_STATE_PATH } from "./constants.mjs";
 
 export type SyncedStateStatus = "connected" | "disconnected" | "reconnecting";
@@ -24,6 +24,10 @@ function normalizeEndpoint(endpoint: string): string {
 
 // Map of endpoint URLs to their respective clients
 const clientCache = new Map<string, SyncedStateClient>();
+
+// Tracks the promise of the underlying capnweb session per endpoint, exposed
+// for tests so they can `await` the lazy load before making assertions.
+const baseClientPromiseByEndpoint = new Map<string, Promise<unknown>>();
 
 // Track active subscriptions per client for cleanup on page reload
 // and for re-subscribing after reconnection
@@ -172,8 +176,9 @@ function reconnect(endpoint: string, deadClient: SyncedStateClient) {
 
 /**
  * Returns a cached client for the provided endpoint, creating it when necessary.
- * The client is wrapped to track subscriptions for cleanup on page reload.
- * On connection failure, automatically reconnects and re-subscribes.
+ * The returned client is a proxy that loads `capnweb` lazily on first method
+ * call — consumers that never hit `use-synced-state` pay no import cost and
+ * don't need `capnweb` installed.
  * @param endpoint Endpoint to connect to.
  * @returns RPC client instance.
  */
@@ -189,14 +194,27 @@ export const getSyncedStateClient = (
     return existingClient;
   }
 
-  const baseClient = newWebSocketRpcSession(
-    endpoint,
-  ) as unknown as SyncedStateClient;
+  let baseClientPromise: Promise<any> | null = null;
+  let wrappedClient!: SyncedStateClient;
 
-  // Wrap the client using a Proxy to track subscriptions
-  // The RPC client uses dynamic property access, so we can't use .bind()
-  const wrappedClient = new Proxy(baseClient, {
-    get(target, prop) {
+  const getBaseClient = (): Promise<any> => {
+    if (!baseClientPromise) {
+      baseClientPromise = loadCapnweb().then((mod) => {
+        const session = mod.newWebSocketRpcSession(endpoint);
+        if (typeof (session as any).onRpcBroken === "function") {
+          (session as any).onRpcBroken(() => {
+            reconnect(endpoint, wrappedClient);
+          });
+        }
+        return session;
+      });
+      baseClientPromiseByEndpoint.set(endpoint, baseClientPromise);
+    }
+    return baseClientPromise;
+  };
+
+  wrappedClient = new Proxy({} as SyncedStateClient, {
+    get(_target, prop) {
       if (prop === "subscribe") {
         return async (key: string, handler: (value: unknown) => void) => {
           const subscription: Subscription = {
@@ -205,7 +223,8 @@ export const getSyncedStateClient = (
             client: wrappedClient,
           };
           activeSubscriptions.add(subscription);
-          return (target as any)[prop](key, handler);
+          const base = await getBaseClient();
+          return base[prop](key, handler);
         };
       }
       if (prop === "unsubscribe") {
@@ -221,23 +240,28 @@ export const getSyncedStateClient = (
               break;
             }
           }
-          return (target as any)[prop](key, handler);
+          const base = await getBaseClient();
+          return base[prop](key, handler);
         };
       }
       // Pass through all other properties/methods
-      return (target as any)[prop];
+      return async (...args: unknown[]) => {
+        const base = await getBaseClient();
+        return base[prop as string](...args);
+      };
     },
   }) as SyncedStateClient;
 
-  // Listen for connection failure and trigger reconnection
-  if (typeof (baseClient as any).onRpcBroken === "function") {
-    (baseClient as any).onRpcBroken(() => {
-      reconnect(endpoint, wrappedClient);
-    });
-  }
-
   // Cache the client for this endpoint
   clientCache.set(endpoint, wrappedClient);
+
+  // Eagerly kick off the capnweb load so the underlying session (and its
+  // onRpcBroken handler) is ready as soon as possible, and reconnect flows
+  // that don't call methods on the new client still create the replacement
+  // session. Errors are swallowed here to avoid unhandled rejections — they
+  // still surface through subsequent method calls because the rejected
+  // promise remains cached.
+  void getBaseClient().catch(() => {});
 
   return wrappedClient;
 };
@@ -272,6 +296,7 @@ export const setSyncedStateClientForTesting = (
   } else {
     clientCache.delete(endpoint);
   }
+  baseClientPromiseByEndpoint.delete(endpoint);
   activeSubscriptions.clear();
   statusListeners.clear();
   // Clear any pending reconnection timers
@@ -291,4 +316,15 @@ export const __testing = {
   statusListeners,
   reconnect,
   getBackoffMs,
+  // Awaits the eagerly-kicked-off capnweb load for a cached client. Tests
+  // should `await __testing.warmUp(endpoint)` after `getSyncedStateClient`
+  // (or after a reconnect) when they need the underlying session to exist
+  // before asserting on it.
+  async warmUp(endpoint: string = DEFAULT_SYNCED_STATE_PATH): Promise<void> {
+    const normalized = normalizeEndpoint(endpoint);
+    const promise = baseClientPromiseByEndpoint.get(normalized);
+    if (promise) {
+      await promise.catch(() => {});
+    }
+  },
 };

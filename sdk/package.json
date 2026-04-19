@@ -201,6 +201,11 @@
     "vite": "^6.2.6 || 7.x",
     "wrangler": "^4.77.0"
   },
+  "peerDependenciesMeta": {
+    "capnweb": {
+      "optional": true
+    }
+  },
   "packageManager": "pnpm@10.31.0",
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.31.0",
