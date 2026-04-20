@@ -13,14 +13,61 @@ type DecodeReply = (
 export interface RscActionHandlerDeps {
   getServerModuleExport: GetServerModuleExport;
   decodeReply: DecodeReply;
+  allowedOrigins?: readonly string[];
+}
+
+// context(justinvdm, 2026-04-20): Origin validation for non-GET action requests.
+// Method enforcement alone does not distinguish a legitimate same-origin POST
+// from a POST driven by a same-site sibling origin (e.g. sibling subdomain,
+// another localhost port). SameSite=Lax cookies are attached in both cases, and
+// the action request's Content-Type is CORS-safelisted, so no preflight fires.
+// We require the request's Origin header to match the app's own origin, unless
+// the caller origin is listed in allowedOrigins.
+function validateSameOrigin(
+  req: Request,
+  allowedOrigins: readonly string[] | undefined,
+): { valid: true } | { valid: false; response: Response } {
+  const origin = req.headers.get("Origin");
+
+  if (!origin) {
+    return {
+      valid: false,
+      response: new Response("Missing Origin header", { status: 403 }),
+    };
+  }
+
+  const selfOrigin = new URL(req.url).origin;
+
+  if (origin === selfOrigin) {
+    return { valid: true };
+  }
+
+  if (allowedOrigins && allowedOrigins.includes(origin)) {
+    return { valid: true };
+  }
+
+  return {
+    valid: false,
+    response: new Response("Origin not allowed", { status: 403 }),
+  };
 }
 
 export async function rscActionHandler(
   req: Request,
-  { getServerModuleExport, decodeReply }: RscActionHandlerDeps,
+  { getServerModuleExport, decodeReply, allowedOrigins }: RscActionHandlerDeps,
 ): Promise<unknown> {
   const url = new URL(req.url);
   const contentType = req.headers.get("content-type");
+
+  // context(justinvdm, 2026-04-20): Enforce Origin/Host match for non-GET action
+  // requests. GET (serverQuery) is expected to be idempotent and is not subject
+  // to this check.
+  if (req.method !== "GET") {
+    const originCheck = validateSameOrigin(req, allowedOrigins);
+    if (!originCheck.valid) {
+      return originCheck.response;
+    }
+  }
 
   let args: unknown[] = [];
 

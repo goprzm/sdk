@@ -5,7 +5,7 @@ import { renderToRscStream } from "./render/renderToRscStream";
 
 import { injectRSCPayload } from "rsc-html-stream/server";
 import { ErrorResponse } from "./error";
-import { rscActionHandler } from "./register/worker";
+import { createRscActionHandler } from "./register/worker";
 import { DefaultAppContext, RequestInfo } from "./requestInfo/types";
 import {
   getRequestInfo,
@@ -38,13 +38,25 @@ export type AppDefinition<
   __rwRoutes: Routes;
 };
 
+export interface DefineAppOptions {
+  // context(justinvdm, 2026-04-20): Origins that may invoke server actions on
+  // this app in addition to the app's own origin. Intended for cases where a
+  // trusted, separately deployed frontend legitimately calls server actions
+  // cross-origin. Leave unset for the common single-origin deployment.
+  allowedOrigins?: readonly string[];
+}
+
 export const defineApp = <
   T extends RequestInfo = RequestInfo<any, DefaultAppContext>,
   Routes extends readonly Route<T>[] = readonly Route<T>[],
 >(
   routes: Routes,
+  options: DefineAppOptions = {},
 ): AppDefinition<Routes, T> => {
   const router = defineRoutes<T>(routes);
+  const rscActionHandler = createRscActionHandler({
+    allowedOrigins: options.allowedOrigins,
+  });
 
   return {
     __rwRoutes: routes,

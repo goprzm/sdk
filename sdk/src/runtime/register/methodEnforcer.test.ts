@@ -14,12 +14,22 @@ function makeRequest(
   url: string,
   method: string,
   body?: string,
+  extraHeaders?: Record<string, string>,
 ): Request {
   const init: RequestInit = { method };
+  const headers: Record<string, string> = {};
 
   if (body !== undefined) {
     init.body = body;
-    init.headers = { "content-type": "application/json" };
+    headers["content-type"] = "application/json";
+  }
+
+  if (extraHeaders) {
+    Object.assign(headers, extraHeaders);
+  }
+
+  if (Object.keys(headers).length > 0) {
+    init.headers = headers;
   }
 
   return new Request(url, init);
@@ -27,6 +37,16 @@ function makeRequest(
 
 const ACTION_URL =
   "https://app.test/page?__rsc_action_id=%2Factions.tsx%23doThing";
+
+const SELF_ORIGIN = "https://app.test";
+
+function postWithOrigin(origin: string | undefined): Request {
+  const headers: Record<string, string> = {};
+  if (origin !== undefined) {
+    headers["Origin"] = origin;
+  }
+  return makeRequest(ACTION_URL, "POST", "[]", headers);
+}
 
 describe("rscActionHandler method enforcement", () => {
   it("rejects GET for an action with method POST", async () => {
@@ -46,7 +66,7 @@ describe("rscActionHandler method enforcement", () => {
   it("rejects POST for an action with method GET", async () => {
     const action = Object.assign(vi.fn(), { method: "GET" });
     const deps = createDeps(action);
-    const req = makeRequest(ACTION_URL, "POST", "[]");
+    const req = makeRequest(ACTION_URL, "POST", "[]", { Origin: SELF_ORIGIN });
 
     const result = await rscActionHandler(req, deps);
 
@@ -62,7 +82,7 @@ describe("rscActionHandler method enforcement", () => {
       method: "POST",
     });
     const deps = createDeps(action);
-    const req = makeRequest(ACTION_URL, "POST", "[]");
+    const req = makeRequest(ACTION_URL, "POST", "[]", { Origin: SELF_ORIGIN });
 
     const result = await rscActionHandler(req, deps);
 
@@ -87,7 +107,9 @@ describe("rscActionHandler method enforcement", () => {
     const action = vi.fn().mockReturnValue("ok");
     const deps = createDeps(action);
 
-    const postReq = makeRequest(ACTION_URL, "POST", "[]");
+    const postReq = makeRequest(ACTION_URL, "POST", "[]", {
+      Origin: SELF_ORIGIN,
+    });
     const postResult = await rscActionHandler(postReq, deps);
     expect(postResult).toBe("ok");
     expect(action).toHaveBeenCalled();
@@ -165,11 +187,127 @@ describe("rscActionHandler method enforcement", () => {
       getServerModuleExport: vi.fn().mockResolvedValue(action),
       decodeReply: vi.fn().mockResolvedValue(["decoded-arg"]),
     };
-    const req = makeRequest(ACTION_URL, "POST", "serialized-body");
+    const req = makeRequest(ACTION_URL, "POST", "serialized-body", {
+      Origin: SELF_ORIGIN,
+    });
 
     await rscActionHandler(req, deps);
 
     expect(deps.decodeReply).toHaveBeenCalledWith("serialized-body", null);
     expect(action).toHaveBeenCalledWith("decoded-arg");
+  });
+});
+
+describe("rscActionHandler origin enforcement", () => {
+  it("allows POST whose Origin matches the request's own origin", async () => {
+    const action = Object.assign(vi.fn().mockReturnValue("ok"), {
+      method: "POST",
+    });
+    const deps = createDeps(action);
+    const req = postWithOrigin(SELF_ORIGIN);
+
+    const result = await rscActionHandler(req, deps);
+
+    expect(result).toBe("ok");
+    expect(action).toHaveBeenCalled();
+  });
+
+  it("rejects POST from a different origin with 403", async () => {
+    const action = Object.assign(vi.fn(), { method: "POST" });
+    const deps = createDeps(action);
+    const req = postWithOrigin("https://evil.test");
+
+    const result = await rscActionHandler(req, deps);
+
+    expect(result).toBeInstanceOf(Response);
+    expect((result as Response).status).toBe(403);
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("rejects POST from a same-site sibling subdomain with 403", async () => {
+    // context(justinvdm, 2026-04-20): The exact scenario in the advisory —
+    // Origin sits under the same registrable domain so SameSite=Lax cookies
+    // are attached, but the Origin header does not match the app's own origin.
+    const action = Object.assign(vi.fn(), { method: "POST" });
+    const deps = createDeps(action);
+    const req = postWithOrigin("https://evil.test.example");
+
+    const result = await rscActionHandler(req, deps);
+
+    expect(result).toBeInstanceOf(Response);
+    expect((result as Response).status).toBe(403);
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("rejects POST missing the Origin header with 403", async () => {
+    const action = Object.assign(vi.fn(), { method: "POST" });
+    const deps = createDeps(action);
+    const req = postWithOrigin(undefined);
+
+    const result = await rscActionHandler(req, deps);
+
+    expect(result).toBeInstanceOf(Response);
+    expect((result as Response).status).toBe(403);
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("allows POST from an origin in the allowedOrigins list", async () => {
+    const action = Object.assign(vi.fn().mockReturnValue("ok"), {
+      method: "POST",
+    });
+    const deps: RscActionHandlerDeps = {
+      ...createDeps(action),
+      allowedOrigins: ["https://trusted.example"],
+    };
+    const req = postWithOrigin("https://trusted.example");
+
+    const result = await rscActionHandler(req, deps);
+
+    expect(result).toBe("ok");
+    expect(action).toHaveBeenCalled();
+  });
+
+  it("rejects POST from an origin not in the allowedOrigins list", async () => {
+    const action = Object.assign(vi.fn(), { method: "POST" });
+    const deps: RscActionHandlerDeps = {
+      ...createDeps(action),
+      allowedOrigins: ["https://trusted.example"],
+    };
+    const req = postWithOrigin("https://not-trusted.example");
+
+    const result = await rscActionHandler(req, deps);
+
+    expect(result).toBeInstanceOf(Response);
+    expect((result as Response).status).toBe(403);
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("does not apply the origin check to GET (serverQuery) requests", async () => {
+    // context(justinvdm, 2026-04-20): GET is expected to be idempotent and is
+    // out of scope for the origin check. A top-level GET navigation from
+    // another origin does not send an Origin header at all, so enforcing here
+    // would reject legitimate navigations.
+    const action = Object.assign(vi.fn().mockReturnValue("data"), {
+      method: "GET",
+    });
+    const deps = createDeps(action);
+    const req = makeRequest(ACTION_URL + "&args=%5B%5D", "GET");
+
+    const result = await rscActionHandler(req, deps);
+
+    expect(result).toBe("data");
+    expect(action).toHaveBeenCalled();
+  });
+
+  it("runs origin check before invoking the action", async () => {
+    const action = Object.assign(vi.fn(), { method: "POST" });
+    const deps = createDeps(action);
+    const req = postWithOrigin("https://evil.test");
+
+    await rscActionHandler(req, deps);
+
+    expect(deps.getServerModuleExport).not.toHaveBeenCalled();
+    expect(deps.decodeReply).not.toHaveBeenCalled();
+    expect(action).not.toHaveBeenCalled();
   });
 });

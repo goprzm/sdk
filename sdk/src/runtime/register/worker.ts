@@ -76,6 +76,17 @@ export async function __smokeTestActionHandler(
   return { status: "ok", timestamp };
 }
 
+export function createRscActionHandler(
+  options: { allowedOrigins?: readonly string[] } = {},
+): (req: Request) => Promise<unknown> {
+  return (req) =>
+    rscActionHandlerImpl(req, {
+      getServerModuleExport,
+      decodeReply,
+      allowedOrigins: options.allowedOrigins,
+    });
+}
+
 export async function rscActionHandler(req: Request): Promise<unknown> {
   return rscActionHandlerImpl(req, { getServerModuleExport, decodeReply });
 }
