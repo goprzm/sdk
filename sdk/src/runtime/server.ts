@@ -33,7 +33,7 @@ let globalWrap: ServerFunctionWrap | undefined;
  * handler function, its arguments, and the type ("action" or "query").
  * Interruptors run *outside* the wrapper.
  *
- * Throws if called more than once.
+ * Only one wrapper is active at a time; the most recent call wins.
  *
  * @example
  * ```ts
@@ -49,12 +49,6 @@ let globalWrap: ServerFunctionWrap | undefined;
  * ```
  */
 export function registerServerFunctionWrap(wrap: ServerFunctionWrap) {
-  if (globalWrap) {
-    throw new Error(
-      "registerServerFunctionWrap() has already been called. " +
-        "Only one wrapper can be registered.",
-    );
-  }
   globalWrap = wrap;
 }
 

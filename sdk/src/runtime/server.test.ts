@@ -120,12 +120,20 @@ describe("registerServerFunctionWrap", () => {
     expect(result).toBeInstanceOf(Response);
   });
 
-  it("throws if called more than once", () => {
-    registerServerFunctionWrap(async (fn, args) => fn(...args));
+  it("replaces the wrapper if called more than once", async () => {
+    const first = vi.fn((fn, args, _type) => fn(...args));
+    const second = vi.fn((fn, args, _type) => fn(...args));
 
-    expect(() => {
-      registerServerFunctionWrap(async (fn, args) => fn(...args));
-    }).toThrow("registerServerFunctionWrap() has already been called");
+    registerServerFunctionWrap(first);
+    registerServerFunctionWrap(second);
+
+    const action = serverAction(async function run() {
+      return "ok";
+    });
+    await action();
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledOnce();
   });
 
   it("without registration, handlers work normally", async () => {
