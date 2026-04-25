@@ -1,6 +1,7 @@
-import { RpcStub, RpcTarget, newWorkersRpcResponse } from "capnweb";
+import type { RpcStub } from "capnweb";
 import { DurableObject } from "cloudflare:workers";
 import type { RequestInfo } from "../runtime/requestInfo/types";
+import { loadCapnweb } from "./capnweb-loader.mjs";
 
 export type SyncedStateValue = unknown;
 
@@ -30,6 +31,64 @@ type OnUnsubscribeHandler = (
   key: string,
   stub: DurableObjectStub<SyncedStateServer>,
 ) => void;
+
+type CoordinatorApiCtor = new (
+  coordinator: SyncedStateServer,
+  stub: DurableObjectStub<SyncedStateServer>,
+) => { _setStub(stub: DurableObjectStub<SyncedStateServer>): void };
+
+let CoordinatorApiClass: CoordinatorApiCtor | null = null;
+
+async function getCoordinatorApi(): Promise<{
+  CoordinatorApi: CoordinatorApiCtor;
+  newWorkersRpcResponse: typeof import("capnweb").newWorkersRpcResponse;
+}> {
+  const { RpcTarget, newWorkersRpcResponse } = await loadCapnweb();
+  if (!CoordinatorApiClass) {
+    CoordinatorApiClass = class CoordinatorApi extends RpcTarget {
+      #coordinator: SyncedStateServer;
+      #stub: DurableObjectStub<SyncedStateServer>;
+
+      constructor(
+        coordinator: SyncedStateServer,
+        stub: DurableObjectStub<SyncedStateServer>,
+      ) {
+        super();
+        this.#coordinator = coordinator;
+        this.#stub = stub;
+        coordinator.setStub(stub);
+      }
+
+      _setStub(stub: DurableObjectStub<SyncedStateServer>): void {
+        this.#stub = stub;
+        this.#coordinator.setStub(stub);
+      }
+
+      getState(key: string): SyncedStateValue {
+        return this.#coordinator.getState(key);
+      }
+
+      setState(value: SyncedStateValue, key: string): void {
+        this.#coordinator.setState(value, key);
+      }
+
+      subscribe(
+        key: string,
+        client: RpcStub<(value: SyncedStateValue) => void>,
+      ): void {
+        this.#coordinator.subscribe(key, client);
+      }
+
+      unsubscribe(
+        key: string,
+        client: RpcStub<(value: SyncedStateValue) => void>,
+      ): void {
+        this.#coordinator.unsubscribe(key, client);
+      }
+    } as unknown as CoordinatorApiCtor;
+  }
+  return { CoordinatorApi: CoordinatorApiClass, newWorkersRpcResponse };
+}
 
 /**
  * Durable Object that keeps shared state for multiple clients and notifies subscribers.
@@ -218,54 +277,13 @@ export class SyncedStateServer extends DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const { CoordinatorApi, newWorkersRpcResponse } =
+      await getCoordinatorApi();
     // Create a placeholder stub - it will be set by the worker via _setStub
     const api = new CoordinatorApi(
       this,
       this.#stub || ({} as DurableObjectStub<SyncedStateServer>),
     );
     return newWorkersRpcResponse(request, api);
-  }
-}
-
-class CoordinatorApi extends RpcTarget {
-  #coordinator: SyncedStateServer;
-  #stub: DurableObjectStub<SyncedStateServer>;
-
-  constructor(
-    coordinator: SyncedStateServer,
-    stub: DurableObjectStub<SyncedStateServer>,
-  ) {
-    super();
-    this.#coordinator = coordinator;
-    this.#stub = stub;
-    coordinator.setStub(stub);
-  }
-
-  // Internal method to set the stub - called from worker
-  _setStub(stub: DurableObjectStub<SyncedStateServer>): void {
-    this.#stub = stub;
-    this.#coordinator.setStub(stub);
-  }
-
-  getState(key: string): SyncedStateValue {
-    return this.#coordinator.getState(key);
-  }
-
-  setState(value: SyncedStateValue, key: string): void {
-    this.#coordinator.setState(value, key);
-  }
-
-  subscribe(
-    key: string,
-    client: RpcStub<(value: SyncedStateValue) => void>,
-  ): void {
-    this.#coordinator.subscribe(key, client);
-  }
-
-  unsubscribe(
-    key: string,
-    client: RpcStub<(value: SyncedStateValue) => void>,
-  ): void {
-    this.#coordinator.unsubscribe(key, client);
   }
 }

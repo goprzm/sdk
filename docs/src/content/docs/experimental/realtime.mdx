@@ -246,6 +246,50 @@ SyncedStateServer.registerGetStateHandler((key, value) => {
 });
 ```
 
+## Automatic Reconnection
+
+`useSyncedState` automatically handles dropped WebSocket connections. If the connection dies (bad wifi, server restart, etc.), it will:
+
+1. Detect the broken connection
+2. Reconnect with exponential backoff (1s, 2s, 4s... up to 30s)
+3. Re-subscribe all active state keys
+4. Fetch the latest state so your UI catches up on missed updates
+
+This happens transparently — your components don't need any changes.
+
+### Connection Status Callback
+
+If you want to show a banner or toast when the connection drops, use the `onStatusChange` callback:
+
+```tsx title="src/app/hooks.ts"
+import { createSyncedStateHook } from "rwsdk/use-synced-state/client";
+
+export const useSyncedState = createSyncedStateHook({
+  onStatusChange(status) {
+    // status: "connected" | "disconnected" | "reconnecting"
+    if (status === "disconnected") {
+      console.warn("Connection lost, reconnecting...");
+    }
+    if (status === "connected") {
+      console.log("Connection restored");
+    }
+  },
+});
+```
+
+Then use your custom hook instead of the default:
+
+```tsx title="src/app/components/SharedCounter.tsx"
+"use client";
+
+import { useSyncedState } from "@/app/hooks";
+
+export const SharedCounter = () => {
+  const [count, setCount] = useSyncedState(0, "counter");
+  // ...
+};
+```
+
 ## Future Plans
 
 We are working on making this even more powerful out of the box:

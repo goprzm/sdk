@@ -1,5 +1,6 @@
 "use client";
 
+import { ConnectionStatus } from "@/app/components/ConnectionStatus";
 import { MountUnmountTest } from "@/app/components/MountUnmountTest";
 import { UserPresence } from "@/app/components/UserPresence";
 import { AppContext } from "@/worker";
@@ -36,6 +37,8 @@ export function Home({ ctx }: { ctx: AppContext }) {
   return (
     <div className="container">
       <h1>Synced State Test</h1>
+
+      <ConnectionStatus />
 
       <div className="section">
         <div

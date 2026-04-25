@@ -23,9 +23,9 @@
   },
   "dependencies": {
     "rwsdk": "workspace:*",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "react-server-dom-webpack": "19.2.4",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "react-server-dom-webpack": "19.2.5",
     "@mantine/core": "^9.0.0",
     "@mantine/hooks": "^9.0.0"
   },
@@ -36,7 +36,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "typescript": "6.0.2",
-    "vite": "7.3.1",
+    "vite": "~7.3.2",
     "vitest": "^4.1.2",
     "wrangler": "4.79.0",
     "postcss": "^8.5.8",
@@ -44,8 +44,8 @@
     "postcss-simple-vars": "^7.0.1"
   },
   "overrides": {
-    "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react": "19.2.5",
+    "react-dom": "19.2.5"
   },
   "pnpm": {
   }

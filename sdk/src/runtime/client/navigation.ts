@@ -8,7 +8,7 @@ import {
 export type { NavigationCache, NavigationCacheStorage };
 
 export interface ClientNavigationOptions {
-  onNavigate?: () => void;
+  onNavigate?: () => Promise<void> | void;
   scrollToTop?: boolean;
   scrollBehavior?: "auto" | "smooth" | "instant";
   cacheStorage?: NavigationCacheStorage;
@@ -58,8 +58,20 @@ export function validateClickEvent(event: MouseEvent, target: HTMLElement) {
 
 let IS_CLIENT_NAVIGATION = false;
 
+type PendingScroll = {
+  x: number;
+  y: number;
+  behavior: ScrollBehavior;
+};
+
+// Scroll intent recorded at navigation time and applied post-commit in
+// onHydrated, so the new scroll position aligns with the new DOM rather
+// than flashing on top of the old one.
+let pendingScroll: PendingScroll | null = null;
+
 export interface NavigateOptions {
   history?: "push" | "replace";
+  onNavigate?: () => Promise<void> | void;
   info?: {
     scrollToTop?: boolean;
     scrollBehavior?: "auto" | "smooth" | "instant";
@@ -85,19 +97,17 @@ export async function navigate(
     window.history.replaceState({ path: href }, "", url);
   }
 
-  await globalThis.__rsc_callServer(null, null, "navigation");
-
   const scrollToTop = options.info?.scrollToTop ?? true;
-  const scrollBehavior = options.info?.scrollBehavior ?? "instant";
+  const scrollBehavior = (options.info?.scrollBehavior ??
+    "instant") as ScrollBehavior;
 
-  if (scrollToTop && history.scrollRestoration === "auto") {
-    window.scrollTo({
-      top: 0,
-      left: 0,
-      behavior: scrollBehavior,
-    });
-    saveScrollPosition(0, 0);
+  if (scrollToTop) {
+    pendingScroll = { x: 0, y: 0, behavior: scrollBehavior };
   }
+
+  await options.onNavigate?.();
+
+  await globalThis.__rsc_callServer(null, null, "navigation");
 }
 
 function saveScrollPosition(x: number, y: number) {
@@ -110,6 +120,14 @@ function saveScrollPosition(x: number, y: number) {
     "",
     window.location.href,
   );
+}
+
+function applyPendingScroll() {
+  if (!pendingScroll) return;
+  const { x, y, behavior } = pendingScroll;
+  pendingScroll = null;
+  window.scrollTo({ top: y, left: x, behavior });
+  saveScrollPosition(x, y);
 }
 
 /**
@@ -155,7 +173,26 @@ function saveScrollPosition(x: number, y: number) {
  */
 export function initClientNavigation(opts: ClientNavigationOptions = {}) {
   IS_CLIENT_NAVIGATION = true;
-  history.scrollRestoration = "auto";
+  // Take manual control of scroll restoration. With "auto", the browser
+  // restores scroll immediately on popstate — before the RSC payload has
+  // committed — which causes the old DOM to flash at the new scroll offset.
+  history.scrollRestoration = "manual";
+
+  // If we're booting onto an entry that already has a saved scroll (e.g.
+  // a reload after scrolling, or a back-forward cache restore), queue that
+  // position so the first commit lands us where the user left off.
+  const bootState = window.history.state;
+  if (
+    bootState &&
+    (typeof bootState.scrollX === "number" ||
+      typeof bootState.scrollY === "number")
+  ) {
+    pendingScroll = {
+      x: bootState.scrollX ?? 0,
+      y: bootState.scrollY ?? 0,
+      behavior: "instant",
+    };
+  }
 
   document.addEventListener(
     "click",
@@ -170,14 +207,38 @@ export function initClientNavigation(opts: ClientNavigationOptions = {}) {
       const a = el.closest("a");
       const href = a?.getAttribute("href") as string;
 
-      await navigate(href);
+      await navigate(href, { history: "push", onNavigate: opts.onNavigate });
     },
     true,
   );
 
   window.addEventListener("popstate", async function handlePopState() {
+    const state = window.history.state ?? {};
+    pendingScroll = {
+      x: typeof state.scrollX === "number" ? state.scrollX : 0,
+      y: typeof state.scrollY === "number" ? state.scrollY : 0,
+      behavior: "instant",
+    };
+    await opts.onNavigate?.();
     await globalThis.__rsc_callServer(null, null, "navigation");
   });
+
+  // Persist the user's scroll position on the current history entry so
+  // that back/forward navigation can restore it accurately once the new
+  // RSC payload commits. Coalesced via rAF to avoid thrashing replaceState.
+  let scrollSaveScheduled = false;
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (scrollSaveScheduled) return;
+      scrollSaveScheduled = true;
+      requestAnimationFrame(() => {
+        scrollSaveScheduled = false;
+        saveScrollPosition(window.scrollX, window.scrollY);
+      });
+    },
+    { passive: true },
+  );
 
   function handleResponse(response: Response): boolean {
     if (response.status >= 300 && response.status < 400) {
@@ -203,6 +264,10 @@ export function initClientNavigation(opts: ClientNavigationOptions = {}) {
   }
 
   function onHydrated() {
+    // Apply any pending scroll intent now that React has committed the new
+    // DOM — this is what prevents the scroll flash on both link-click and
+    // popstate navigations.
+    applyPendingScroll();
     // After each RSC hydration/update, increment generation and evict old caches,
     // then warm the navigation cache based on any <link rel="x-prefetch"> tags
     // rendered for the current location.

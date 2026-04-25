@@ -1,8 +1,8 @@
-import { RpcTarget, newWorkersRpcResponse } from "capnweb";
 import { env } from "cloudflare:workers";
 import { route } from "../runtime/entries/router";
 import type { RequestInfo } from "../runtime/requestInfo/types";
 import { runWithRequestInfo } from "../runtime/requestInfo/worker";
+import { loadCapnweb } from "./capnweb-loader.mjs";
 import {
   SyncedStateServer,
   type SyncedStateValue,
@@ -18,114 +18,132 @@ export type SyncedStateRouteOptions = {
 
 const DEFAULT_SYNC_STATE_NAME = "syncedState";
 
-class SyncedStateProxy extends RpcTarget {
-  #stub: DurableObjectStub<SyncedStateServer>;
-  #keyHandler:
-    | ((
-        key: string,
-        stub: DurableObjectStub<SyncedStateServer>,
-      ) => Promise<string>)
-    | null;
-  #requestInfo: RequestInfo | null;
+type KeyHandler = (
+  key: string,
+  stub: DurableObjectStub<SyncedStateServer>,
+) => Promise<string>;
 
-  constructor(
-    stub: DurableObjectStub<SyncedStateServer>,
-    keyHandler:
-      | ((
+type SyncedStateProxyCtor = new (
+  stub: DurableObjectStub<SyncedStateServer>,
+  keyHandler: KeyHandler | null,
+  requestInfo: RequestInfo | null,
+) => unknown;
+
+let SyncedStateProxyClass: SyncedStateProxyCtor | null = null;
+
+async function getSyncedStateProxy(): Promise<{
+  SyncedStateProxy: SyncedStateProxyCtor;
+  newWorkersRpcResponse: typeof import("capnweb").newWorkersRpcResponse;
+}> {
+  const { RpcTarget, newWorkersRpcResponse } = await loadCapnweb();
+  if (!SyncedStateProxyClass) {
+    SyncedStateProxyClass = class SyncedStateProxy extends RpcTarget {
+      #stub: DurableObjectStub<SyncedStateServer>;
+      #keyHandler: KeyHandler | null;
+      #requestInfo: RequestInfo | null;
+
+      constructor(
+        stub: DurableObjectStub<SyncedStateServer>,
+        keyHandler: KeyHandler | null,
+        requestInfo: RequestInfo | null,
+      ) {
+        super();
+        this.#stub = stub;
+        this.#keyHandler = keyHandler;
+        this.#requestInfo = requestInfo;
+        // Set stub in DO instance so handlers can access it
+        if (stub && typeof (stub as any)._setStub === "function") {
+          void (stub as any)._setStub(stub);
+        }
+      }
+
+      /**
+       * Transforms a key using the keyHandler, preserving async context so requestInfo.ctx is available.
+       */
+      async #transformKey(key: string): Promise<string> {
+        if (!this.#keyHandler) {
+          return key;
+        }
+        if (this.#requestInfo) {
+          // Preserve async context when calling keyHandler so requestInfo.ctx is available
+          return await runWithRequestInfo(
+            this.#requestInfo,
+            async () => await this.#keyHandler!(key, this.#stub),
+          );
+        }
+        return await this.#keyHandler(key, this.#stub);
+      }
+
+      /**
+       * Calls a handler function, preserving async context so requestInfo.ctx is available.
+       */
+      #callHandler(
+        handler: (
           key: string,
           stub: DurableObjectStub<SyncedStateServer>,
-        ) => Promise<string>)
-      | null,
-    requestInfo: RequestInfo | null,
-  ) {
-    super();
-    this.#stub = stub;
-    this.#keyHandler = keyHandler;
-    this.#requestInfo = requestInfo;
-    // Set stub in DO instance so handlers can access it
-    if (stub && typeof (stub as any)._setStub === "function") {
-      void (stub as any)._setStub(stub);
-    }
+        ) => void,
+        key: string,
+        stub: DurableObjectStub<SyncedStateServer>,
+      ): void {
+        if (this.#requestInfo) {
+          // Preserve async context when calling handler so requestInfo.ctx is available
+          runWithRequestInfo(this.#requestInfo, () => {
+            handler(key, stub);
+          });
+        } else {
+          handler(key, stub);
+        }
+      }
+
+      async getState(key: string): Promise<SyncedStateValue> {
+        const transformedKey = await this.#transformKey(key);
+        return this.#stub.getState(transformedKey);
+      }
+
+      async setState(value: SyncedStateValue, key: string): Promise<void> {
+        const transformedKey = await this.#transformKey(key);
+        return this.#stub.setState(value, transformedKey);
+      }
+
+      async subscribe(key: string, client: any): Promise<void> {
+        const transformedKey = await this.#transformKey(key);
+
+        const subscribeHandler = SyncedStateServer.getSubscribeHandler();
+        if (subscribeHandler) {
+          this.#callHandler(subscribeHandler, transformedKey, this.#stub);
+        }
+
+        // dup the client if it is a function; otherwise, pass it as is;
+        // this is because the client is a WebSocketRpcSession, and we need to pass a new instance of the client to the DO;
+        const clientToPass =
+          typeof client.dup === "function" ? client.dup() : client;
+        return this.#stub.subscribe(transformedKey, clientToPass);
+      }
+
+      async unsubscribe(key: string, client: any): Promise<void> {
+        const transformedKey = await this.#transformKey(key);
+
+        // Call unsubscribe handler before unsubscribe, similar to subscribe handler
+        // This ensures the handler is called even if the unsubscribe doesn't find a match
+        // or if the RPC call fails
+        const unsubscribeHandler = SyncedStateServer.getUnsubscribeHandler();
+        if (unsubscribeHandler) {
+          this.#callHandler(unsubscribeHandler, transformedKey, this.#stub);
+        }
+
+        try {
+          await this.#stub.unsubscribe(transformedKey, client);
+        } catch (error) {
+          // Ignore errors during unsubscribe - handler has already been called
+          // This prevents RPC stub disposal errors from propagating
+        }
+      }
+    } as unknown as SyncedStateProxyCtor;
   }
-
-  /**
-   * Transforms a key using the keyHandler, preserving async context so requestInfo.ctx is available.
-   */
-  async #transformKey(key: string): Promise<string> {
-    if (!this.#keyHandler) {
-      return key;
-    }
-    if (this.#requestInfo) {
-      // Preserve async context when calling keyHandler so requestInfo.ctx is available
-      return await runWithRequestInfo(
-        this.#requestInfo,
-        async () => await this.#keyHandler!(key, this.#stub),
-      );
-    }
-    return await this.#keyHandler(key, this.#stub);
-  }
-
-  /**
-   * Calls a handler function, preserving async context so requestInfo.ctx is available.
-   */
-  #callHandler(
-    handler: (key: string, stub: DurableObjectStub<SyncedStateServer>) => void,
-    key: string,
-    stub: DurableObjectStub<SyncedStateServer>,
-  ): void {
-    if (this.#requestInfo) {
-      // Preserve async context when calling handler so requestInfo.ctx is available
-      runWithRequestInfo(this.#requestInfo, () => {
-        handler(key, stub);
-      });
-    } else {
-      handler(key, stub);
-    }
-  }
-
-  async getState(key: string): Promise<SyncedStateValue> {
-    const transformedKey = await this.#transformKey(key);
-    return this.#stub.getState(transformedKey);
-  }
-
-  async setState(value: SyncedStateValue, key: string): Promise<void> {
-    const transformedKey = await this.#transformKey(key);
-    return this.#stub.setState(value, transformedKey);
-  }
-
-  async subscribe(key: string, client: any): Promise<void> {
-    const transformedKey = await this.#transformKey(key);
-
-    const subscribeHandler = SyncedStateServer.getSubscribeHandler();
-    if (subscribeHandler) {
-      this.#callHandler(subscribeHandler, transformedKey, this.#stub);
-    }
-
-    // dup the client if it is a function; otherwise, pass it as is;
-    // this is because the client is a WebSocketRpcSession, and we need to pass a new instance of the client to the DO;
-    const clientToPass =
-      typeof client.dup === "function" ? client.dup() : client;
-    return this.#stub.subscribe(transformedKey, clientToPass);
-  }
-
-  async unsubscribe(key: string, client: any): Promise<void> {
-    const transformedKey = await this.#transformKey(key);
-
-    // Call unsubscribe handler before unsubscribe, similar to subscribe handler
-    // This ensures the handler is called even if the unsubscribe doesn't find a match
-    // or if the RPC call fails
-    const unsubscribeHandler = SyncedStateServer.getUnsubscribeHandler();
-    if (unsubscribeHandler) {
-      this.#callHandler(unsubscribeHandler, transformedKey, this.#stub);
-    }
-
-    try {
-      await this.#stub.unsubscribe(transformedKey, client);
-    } catch (error) {
-      // Ignore errors during unsubscribe - handler has already been called
-      // This prevents RPC stub disposal errors from propagating
-    }
-  }
+  return {
+    SyncedStateProxy: SyncedStateProxyClass,
+    newWorkersRpcResponse,
+  };
 }
 
 /**
@@ -173,6 +191,8 @@ export const syncedStateRoutes = (
 
     const id = namespace.idFromName(resolvedRoomName);
     const coordinator = namespace.get(id);
+    const { SyncedStateProxy, newWorkersRpcResponse } =
+      await getSyncedStateProxy();
     const proxy = new SyncedStateProxy(coordinator, keyHandler, requestInfo);
 
     return newWorkersRpcResponse(request, proxy);

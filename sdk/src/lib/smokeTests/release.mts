@@ -30,6 +30,55 @@ export async function runRelease(
   return runE2ERelease(cwd, projectDir, resourceUniqueKey);
 }
 
+async function waitForDeploymentContent(
+  baseUrl: string,
+  {
+    timeoutMs = 60_000,
+    intervalMs = 2_000,
+  }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const marker = "__RWSDK_CONTEXT";
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  let lastStatus: number | undefined;
+  let lastBytes = 0;
+  while (Date.now() < deadline) {
+    attempt += 1;
+    try {
+      const res = await fetch(baseUrl);
+      const body = await res.text();
+      lastStatus = res.status;
+      lastBytes = body.length;
+      if (body.includes(marker)) {
+        log(
+          "Deployment content verified at %s after %d attempt(s)",
+          baseUrl,
+          attempt,
+        );
+        console.log(
+          `✅ Deployment content ready at ${baseUrl} (attempt ${attempt})`,
+        );
+        return;
+      }
+      log(
+        "Attempt %d: %s returned %d (%d bytes), no app marker yet",
+        attempt,
+        baseUrl,
+        res.status,
+        body.length,
+      );
+    } catch (err) {
+      log("Attempt %d: fetch failed for %s: %O", attempt, baseUrl, err);
+    }
+    await setTimeout(intervalMs);
+  }
+  throw new Error(
+    `Deployment at ${baseUrl} did not serve app content within ${timeoutMs}ms ` +
+      `(last status ${lastStatus ?? "n/a"}, ${lastBytes} bytes). ` +
+      `Likely Cloudflare *.workers.dev propagation still in progress.`,
+  );
+}
+
 /**
  * Runs tests against the production deployment
  */
@@ -62,6 +111,13 @@ export async function runReleaseTest(
 
     // DRY: check both root and custom path
     await checkServerUp(url, "/");
+
+    // A fresh *.workers.dev subdomain can return 200 with Cloudflare's
+    // "There is nothing here yet" placeholder before the worker code is
+    // globally propagated. Poll the URL until the response body contains
+    // an rwsdk-rendered marker so we don't run the browser tests against
+    // the placeholder.
+    await waitForDeploymentContent(url);
 
     // Now run the tests with the custom path
     const testUrl = new URL("/__smoke_test", url).toString();

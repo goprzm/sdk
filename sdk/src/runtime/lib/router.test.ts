@@ -5,6 +5,7 @@ import type { RequestInfo } from "../requestInfo/types";
 import {
   defineRoutes,
   except,
+  index,
   layout,
   matchPath,
   prefix,
@@ -1026,6 +1027,68 @@ describe("defineRoutes - Request Handling Behavior", () => {
 
       expect(await response.text()).toBe("Rendered with layouts");
     });
+
+    it("should accept child routes whose params are a superset of the layout's params", async () => {
+      let capturedLayoutProps: any = null;
+      let capturedRouteParams: any = null;
+
+      // Layout only needs { orgId }
+      const AppLayout = (props: {
+        children?: React.ReactNode;
+        requestInfo?: RequestInfo<{ orgId: string }>;
+      }) => {
+        capturedLayoutProps = props;
+        return React.createElement("div", { className: "app-layout" }, props.children);
+      };
+
+      const OrgIndex = () => {
+        return React.createElement("div", {}, "Org Index");
+      };
+
+      // Schedule needs { orgId, date } — a superset
+      const Schedule = (requestInfo: RequestInfo<{ orgId: string; date: string }>) => {
+        capturedRouteParams = requestInfo.params;
+        return React.createElement(
+          "div",
+          {},
+          `${requestInfo.params.orgId} / ${requestInfo.params.date}`,
+        );
+      };
+
+      const routes = prefix("/:orgId", [
+        layout(AppLayout, [
+          index(OrgIndex),
+          prefix("/schedule", [
+            route("/:date", Schedule),
+          ]),
+        ]),
+      ]);
+
+      const router = defineRoutes([...routes]);
+
+      const deps = createMockDependencies();
+      deps.mockRequestInfo.request = new Request(
+        "http://localhost:3000/acme/schedule/2025-01-15/",
+      );
+
+      const request = new Request(
+        "http://localhost:3000/acme/schedule/2025-01-15/",
+      );
+      const response = await router.handle({
+        request,
+        renderPage: deps.mockRenderPage,
+        getRequestInfo: deps.getRequestInfo,
+        onError: deps.onError,
+        runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+        rscActionHandler: deps.mockRscActionHandler,
+      });
+
+      expect(response.status).toBe(200);
+      expect(deps.mockRequestInfo.params).toEqual({
+        orgId: "acme",
+        date: "2025-01-15",
+      });
+    });
   });
 
   describe("Parameter Extraction", () => {
@@ -1369,6 +1432,181 @@ describe("defineRoutes - Request Handling Behavior", () => {
 
       expect(executionOrder).toEqual(["authMiddleware", "getHandler"]);
       expect(await response.text()).toBe("GET Response");
+    });
+  });
+
+  describe("Cross-realm Response.json() handling", () => {
+    // In Cloudflare's vite dev mode, Response.json() constructs from a
+    // different realm's prototype, so `instanceof Response` fails.
+    // handleMiddlewareResult must recognize these as valid Responses.
+    //
+    // We simulate this by calling Response.json() and then stripping the
+    // prototype, which is exactly what a cross-realm boundary does: the
+    // object is a real Response but its [[Prototype]] comes from a different
+    // global, so `instanceof` against the local `Response` returns false.
+
+    function crossRealmResponseJson(data: unknown, init?: ResponseInit) {
+      // In workerd/vite dev mode, Response.json() constructs from a different
+      // realm's Response. The resulting object has constructor.name === "Response"
+      // but fails instanceof against the local Response global.
+      //
+      // We can't just swap the prototype in Node because V8's brand checks on
+      // Response internal slots would throw. Instead, wrap a real Response.json()
+      // result in a Proxy that fakes a foreign prototype chain — matching exactly
+      // what workerd produces: instanceof false, constructor.name "Response",
+      // all properties/methods functional.
+      const real = Response.json(data, init);
+      const foreignProto = { constructor: { name: "Response" } };
+      const proxy = new Proxy(real, {
+        get(target, prop, _receiver) {
+          if (prop === "constructor") return foreignProto.constructor;
+          const val = Reflect.get(target, prop, target);
+          if (typeof val === "function") return val.bind(target);
+          return val;
+        },
+        getPrototypeOf() {
+          return foreignProto;
+        },
+      });
+      // Sanity: must match the real workerd behavior
+      if (proxy instanceof Response) {
+        throw new Error("Test setup broken: cross-realm response should not pass instanceof");
+      }
+      // TS narrows proxy to `never` after the instanceof check above (it
+      // assumes non-Response means no constructor), but the whole point is
+      // that this object IS a Response from a foreign realm.
+      if ((proxy as any).constructor?.name !== "Response") {
+        throw new Error("Test setup broken: constructor.name should be 'Response'");
+      }
+      return proxy;
+    }
+
+    it("should return cross-realm Response.json() from a POST route handler", async () => {
+      const router = defineRoutes([
+        route("/api/users/", {
+          post: () => crossRealmResponseJson({ created: true }, { status: 201 }),
+        }),
+      ]);
+
+      const deps = createMockDependencies();
+      const request = new Request("http://localhost:3000/api/users/", {
+        method: "POST",
+      });
+      deps.mockRequestInfo.request = request;
+
+      const response = await router.handle({
+        request,
+        renderPage: deps.mockRenderPage,
+        getRequestInfo: deps.getRequestInfo,
+        onError: deps.onError,
+        runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+        rscActionHandler: deps.mockRscActionHandler,
+      });
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({ created: true });
+    });
+
+    it("should short-circuit global middleware returning cross-realm Response.json()", async () => {
+      const executionOrder: string[] = [];
+
+      const authMiddleware = () => {
+        executionOrder.push("authMiddleware");
+        return crossRealmResponseJson({ error: "forbidden" }, { status: 403 });
+      };
+
+      const PageComponent = () => {
+        executionOrder.push("PageComponent");
+        return React.createElement("div", {}, "Page");
+      };
+
+      const router = defineRoutes([
+        authMiddleware,
+        route("/test/", PageComponent),
+      ]);
+
+      const deps = createMockDependencies();
+      const request = new Request("http://localhost:3000/test/");
+      deps.mockRequestInfo.request = request;
+
+      const response = await router.handle({
+        request,
+        renderPage: deps.mockRenderPage,
+        getRequestInfo: deps.getRequestInfo,
+        onError: deps.onError,
+        runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+        rscActionHandler: deps.mockRscActionHandler,
+      });
+
+      expect(executionOrder).toEqual(["authMiddleware"]);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "forbidden" });
+    });
+
+    it("should short-circuit route-specific middleware returning cross-realm Response.json()", async () => {
+      const executionOrder: string[] = [];
+
+      const checkRole = () => {
+        executionOrder.push("checkRole");
+        return crossRealmResponseJson({ error: "unauthorized" }, { status: 401 });
+      };
+
+      const PageComponent = () => {
+        executionOrder.push("PageComponent");
+        return React.createElement("div", {}, "Page");
+      };
+
+      const router = defineRoutes([
+        route("/admin/", [checkRole, PageComponent]),
+      ]);
+
+      const deps = createMockDependencies();
+      const request = new Request("http://localhost:3000/admin/");
+      deps.mockRequestInfo.request = request;
+
+      const response = await router.handle({
+        request,
+        renderPage: deps.mockRenderPage,
+        getRequestInfo: deps.getRequestInfo,
+        onError: deps.onError,
+        runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+        rscActionHandler: deps.mockRscActionHandler,
+      });
+
+      expect(executionOrder).toEqual(["checkRole"]);
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: "unauthorized" });
+    });
+
+    it("should handle cross-realm Response.json() from an except handler", async () => {
+      const errorHandler = except(() => {
+        return crossRealmResponseJson({ error: "internal" }, { status: 500 });
+      });
+
+      const PageComponent = () => {
+        throw new Error("boom");
+      };
+
+      const router = defineRoutes([
+        errorHandler,
+        route("/test/", PageComponent),
+      ]);
+
+      const deps = createMockDependencies();
+      const request = new Request("http://localhost:3000/test/");
+      deps.mockRequestInfo.request = request;
+
+      const response = await router.handle({
+        request,
+        renderPage: deps.mockRenderPage,
+        getRequestInfo: deps.getRequestInfo,
+        onError: deps.onError,
+        runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+        rscActionHandler: deps.mockRscActionHandler,
+      });
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "internal" });
     });
   });
 

@@ -24,9 +24,9 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "react-server-dom-webpack": "19.2.4",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "react-server-dom-webpack": "19.2.5",
     "rwsdk": "workspace:*"
   },
   "devDependencies": {
@@ -37,7 +37,7 @@
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "^0.31.9",
     "typescript": "6.0.2",
-    "vite": "7.3.1",
+    "vite": "~7.3.2",
     "vitest": "^4.1.2",
     "wrangler": "4.79.0"
   },

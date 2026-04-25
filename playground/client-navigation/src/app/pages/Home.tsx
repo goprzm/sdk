@@ -49,6 +49,14 @@ export function Home({ ctx }: RequestInfo) {
           Go to Suspense Page Two
         </a>
       </nav>
+
+      {/* Tall spacer so scroll-restoration E2E tests can actually scroll. */}
+      <div
+        id="tall-spacer"
+        style={{ height: "200vh", background: "lightgray" }}
+      >
+        Scroll down to see the bottom.
+      </div>
     </div>
   );
 }

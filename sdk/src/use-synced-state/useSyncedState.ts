@@ -1,5 +1,9 @@
 import React from "react";
-import { getSyncedStateClient } from "./client-core.js";
+import {
+  getSyncedStateClient,
+  onStatusChange,
+  type StatusChangeCallback,
+} from "./client-core.js";
 import { DEFAULT_SYNCED_STATE_PATH } from "./constants.mjs";
 
 type HookDeps = {
@@ -22,6 +26,7 @@ export type CreateSyncedStateHookOptions = {
   url?: string;
   roomId?: string;
   hooks?: HookDeps;
+  onStatusChange?: StatusChangeCallback;
 };
 
 /**
@@ -82,8 +87,13 @@ export const createSyncedStateHook = (
 
       void client.subscribe(key, handleUpdate);
 
+      const unsubscribeStatus = options.onStatusChange
+        ? onStatusChange(resolvedUrl, options.onStatusChange)
+        : undefined;
+
       return () => {
         isActive = false;
+        unsubscribeStatus?.();
         // Call unsubscribe when component unmounts
         // Page reloads are handled by the beforeunload event listener in client-core.ts
         void client.unsubscribe(key, handleUpdate).catch((error) => {
