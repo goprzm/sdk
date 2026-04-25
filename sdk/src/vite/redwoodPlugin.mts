@@ -14,6 +14,7 @@ import { pathExists } from "fs-extra";
 import { $ } from "../lib/$.mjs";
 import { findWranglerConfig } from "../lib/findWranglerConfig.mjs";
 import { hasPkgScript } from "../lib/hasPkgScript.mjs";
+import { buildIdPlugin } from "./buildIdPlugin.mjs";
 import { cloudflarePreInitPlugin } from "./cloudflarePreInitPlugin.mjs";
 import { configPlugin } from "./configPlugin.mjs";
 import { devServerTimingPlugin } from "./devServerTimingPlugin.mjs";
@@ -135,6 +136,7 @@ export const redwoodPlugin = async (
   }
 
   return [
+    buildIdPlugin(),
     staleDepRetryPlugin(),
     statePlugin({ projectRootDir }),
     devServerTimingPlugin(),

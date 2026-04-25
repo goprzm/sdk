@@ -24,6 +24,16 @@ export { initClientNavigation, navigate } from "./navigation.js";
 export type { ActionResponseData } from "./types";
 
 import { getCachedNavigationResponse } from "./navigationCache.js";
+import {
+  classifyAsStaleAsset,
+  clearStaleAssetGuards,
+  performStaleAssetReload,
+  readBootBuildId,
+  readResponseBuildId,
+  RwsdkStaleAssetError,
+  type StaleAssetGuardMode,
+  type StaleAssetHandler,
+} from "./staleAsset.js";
 import type {
   ActionResponseData,
   HydrationOptions,
@@ -33,7 +43,58 @@ import type {
 } from "./types";
 import { isActionResponse } from "./types";
 
+export {
+  RwsdkStaleAssetError,
+  STALE_ASSET_EVENT,
+  type StaleAssetEventDetail,
+  type StaleAssetGuardMode,
+  type StaleAssetHandler,
+  type StaleAssetReason,
+} from "./staleAsset.js";
+
+const handleStaleAssetFromCreateFromFetch = (
+  error: unknown,
+  response: Response,
+  options: {
+    onStaleAsset?: StaleAssetHandler;
+    staleAssetGuard?: StaleAssetGuardMode;
+  },
+): RwsdkStaleAssetError | null => {
+  const bootBuildId = readBootBuildId();
+  const serverBuildId = readResponseBuildId(response);
+  const buildIdMismatch =
+    bootBuildId !== null &&
+    serverBuildId !== null &&
+    serverBuildId !== bootBuildId;
+  const looksStale = classifyAsStaleAsset(error);
+
+  if (!buildIdMismatch && !looksStale) {
+    return null;
+  }
+
+  const detail = {
+    reason: buildIdMismatch
+      ? ("build-id-mismatch" as const)
+      : ("rsc-deserialization-failed" as const),
+    bootBuildId,
+    serverBuildId,
+    error,
+  };
+
+  performStaleAssetReload({
+    detail,
+    guard: options.staleAssetGuard ?? "session-storage",
+    onStaleAsset: options.onStaleAsset,
+  });
+
+  return new RwsdkStaleAssetError(detail);
+};
+
 export const fetchTransport: Transport = (transportContext) => {
+  const staleAssetOptions = {
+    onStaleAsset: transportContext.onStaleAsset,
+    staleAssetGuard: transportContext.staleAssetGuard,
+  };
   const fetchCallServer = async <Result,>(
     id: null | string,
     args: null | unknown[],
@@ -131,6 +192,17 @@ export const fetchTransport: Transport = (transportContext) => {
       // Continue with the response if handler returned true
       const streamData = createFromFetch(Promise.resolve(response), {
         callServer: fetchCallServer,
+      }).catch((error: unknown) => {
+        // RSC deserialization failed. If this looks like a stale-asset
+        // condition (chunk URL points to a chunk that no longer exists, or
+        // the response advertises a different build-id than we booted with),
+        // surface a typed error and trigger a single guarded reload.
+        const stale = handleStaleAssetFromCreateFromFetch(
+          error,
+          response,
+          staleAssetOptions,
+        );
+        throw stale ?? error;
       }) as Promise<RscActionResponse<Result>>;
 
       if (source === "navigation" || source === "action") {
@@ -153,6 +225,13 @@ export const fetchTransport: Transport = (transportContext) => {
 
     const streamData = createFromFetch(Promise.resolve(response), {
       callServer: fetchCallServer,
+    }).catch((error: unknown) => {
+      const stale = handleStaleAssetFromCreateFromFetch(
+        error,
+        response,
+        staleAssetOptions,
+      );
+      throw stale ?? error;
     }) as Promise<RscActionResponse<Result>>;
 
     if (source === "navigation" || source === "action") {
@@ -227,18 +306,36 @@ export const initClient = async ({
   handleResponse,
   onHydrated,
   onActionResponse,
+  onStaleAsset,
+  staleAssetGuard,
 }: {
   transport?: Transport;
   hydrateRootOptions?: HydrationOptions;
   handleResponse?: (response: Response) => boolean;
   onHydrated?: () => void;
   onActionResponse?: (actionResponse: ActionResponseData) => boolean | void;
+  /**
+   * Called when the framework detects a stale-asset condition (deploy
+   * boundary or chunk-load failure during RSC deserialization). Return
+   * `false` to suppress the automatic full-page reload — the application is
+   * then responsible for recovery, e.g. surfacing a "new version available"
+   * banner. Defaults to automatic reload.
+   */
+  onStaleAsset?: StaleAssetHandler;
+  /**
+   * How aggressively to guard against stale-asset reload loops. Defaults to
+   * `"session-storage"`. Set to `"header-only"` to rely solely on the
+   * Cache-Control header on SSR HTML and skip the sessionStorage guard.
+   */
+  staleAssetGuard?: StaleAssetGuardMode;
 } = {}) => {
   const transportContext: TransportContext = {
     setRscPayload: () => { },
     handleResponse,
     onHydrated,
     onActionResponse,
+    onStaleAsset,
+    staleAssetGuard,
   };
 
   let transportCallServer = transport(transportContext);
@@ -293,6 +390,10 @@ export const initClient = async ({
 
     React.useEffect(() => {
       if (!streamData) return;
+      // Hydration succeeded against the current deploy, so any stale-asset
+      // boundary that triggered a previous reload is now resolved. Clear the
+      // sessionStorage guards so a future deploy boundary can reload again.
+      clearStaleAssetGuards();
       transportContext.onHydrated?.();
     }, [streamData]);
     return (

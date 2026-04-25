@@ -17,6 +17,14 @@ import { ssrWebpackRequire } from "./imports/worker";
 import { Route, defineRoutes } from "./lib/router";
 import type { RwContext } from "./lib/types.js";
 import { generateNonce } from "./lib/utils";
+import { BUILD_ID_HEADER } from "./client/staleAsset.js";
+
+// Build-id is injected at build time via `import.meta.env.RWSDK_BUILD_ID` (see
+// `vite/buildIdPlugin.mts`). It identifies the current deploy so old clients
+// can detect a deploy boundary on RSC navigation and reload. Defaults to
+// "rwsdk" for environments where the define is absent.
+const RWSDK_BUILD_ID: string =
+  ((import.meta as any)?.env?.RWSDK_BUILD_ID as string | undefined) ?? "rwsdk";
 
 export * from "./requestInfo/types";
 
@@ -242,6 +250,11 @@ export const defineApp = <
               "content-type",
               "text/x-component; charset=utf-8",
             );
+            // Stamp every RSC response with the current build-id so the client
+            // can detect a deploy boundary on navigation and reload before
+            // attempting to deserialize against a stale virtual:use-client-lookup
+            // mapping.
+            responseHeaders.set(BUILD_ID_HEADER, RWSDK_BUILD_ID);
 
             return new Response(rscPayloadStream, {
               status: userResponseInit.status,
@@ -291,6 +304,17 @@ export const defineApp = <
 
           const responseHeaders = new Headers(userResponseInit.headers);
           responseHeaders.set("content-type", "text/html; charset=utf-8");
+          // The chunks the document references are content-hashed and may be
+          // cached forever; the entry HTML itself must always revalidate so
+          // browsers fetch the latest build-id rather than reading stale HTML
+          // out of an edge cache during/after a deploy.
+          if (!responseHeaders.has("cache-control")) {
+            responseHeaders.set(
+              "cache-control",
+              "no-cache, must-revalidate",
+            );
+          }
+          responseHeaders.set(BUILD_ID_HEADER, RWSDK_BUILD_ID);
 
           return new Response(html, {
             status: userResponseInit.status,
