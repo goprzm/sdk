@@ -189,29 +189,36 @@ export const fetchTransport: Transport = (transportContext) => {
         return undefined as any;
       }
 
-      // Continue with the response if handler returned true
+      // Keep streamData as the unwrapped Promise that createFromFetch returns.
+      // react-server-dom-webpack's thenable carries internal status/value
+      // fields that React.use() relies on for streaming behaviour; wrapping
+      // it (e.g. with .catch) loses those fields and can leave consumers
+      // suspended indefinitely on the wrapped Promise. We attach the
+      // stale-asset detection via try/catch around our own await instead.
       const streamData = createFromFetch(Promise.resolve(response), {
         callServer: fetchCallServer,
-      }).catch((error: unknown) => {
+      }) as Promise<RscActionResponse<Result>>;
+
+      if (source === "navigation" || source === "action") {
+        transportContext.setRscPayload(streamData);
+      }
+      try {
+        const result = await streamData;
+        return processActionResponse(
+          (result as { actionResult: Result }).actionResult,
+        );
+      } catch (error) {
         // RSC deserialization failed. If this looks like a stale-asset
         // condition (chunk URL points to a chunk that no longer exists, or
         // the response advertises a different build-id than we booted with),
-        // surface a typed error and trigger a single guarded reload.
+        // trigger a single guarded reload, then propagate a typed error.
         const stale = handleStaleAssetFromCreateFromFetch(
           error,
           response,
           staleAssetOptions,
         );
         throw stale ?? error;
-      }) as Promise<RscActionResponse<Result>>;
-
-      if (source === "navigation" || source === "action") {
-        transportContext.setRscPayload(streamData);
       }
-      const result = await streamData;
-      return processActionResponse(
-        (result as { actionResult: Result }).actionResult,
-      );
     }
 
     // Original behavior when no handler is present
@@ -225,22 +232,24 @@ export const fetchTransport: Transport = (transportContext) => {
 
     const streamData = createFromFetch(Promise.resolve(response), {
       callServer: fetchCallServer,
-    }).catch((error: unknown) => {
+    }) as Promise<RscActionResponse<Result>>;
+
+    if (source === "navigation" || source === "action") {
+      transportContext.setRscPayload(streamData);
+    }
+    try {
+      const result = await streamData;
+      return processActionResponse(
+        (result as { actionResult: Result }).actionResult,
+      );
+    } catch (error) {
       const stale = handleStaleAssetFromCreateFromFetch(
         error,
         response,
         staleAssetOptions,
       );
       throw stale ?? error;
-    }) as Promise<RscActionResponse<Result>>;
-
-    if (source === "navigation" || source === "action") {
-      transportContext.setRscPayload(streamData);
     }
-    const result = await streamData;
-    return processActionResponse(
-      (result as { actionResult: Result }).actionResult,
-    );
   };
 
   return fetchCallServer;
