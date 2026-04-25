@@ -37,24 +37,29 @@ export const buildIdPlugin = (): Plugin => {
       const buildId = resolveBuildId(env.mode);
       const stringified = JSON.stringify(buildId);
 
+      // Use a plain global identifier (`__RWSDK_BUILD_ID__`) rather than
+      // `import.meta.env.RWSDK_BUILD_ID`. Vite's define applies inconsistently
+      // to `import.meta.env.X` references inside deeply-imported package
+      // files (e.g. compiled rwsdk modules under node_modules). A plain
+      // identifier is replaced as a simple lexical substitution everywhere.
       return {
         define: {
-          "import.meta.env.RWSDK_BUILD_ID": stringified,
+          __RWSDK_BUILD_ID__: stringified,
         },
         environments: {
           client: {
             define: {
-              "import.meta.env.RWSDK_BUILD_ID": stringified,
+              __RWSDK_BUILD_ID__: stringified,
             },
           },
           ssr: {
             define: {
-              "import.meta.env.RWSDK_BUILD_ID": stringified,
+              __RWSDK_BUILD_ID__: stringified,
             },
           },
           worker: {
             define: {
-              "import.meta.env.RWSDK_BUILD_ID": stringified,
+              __RWSDK_BUILD_ID__: stringified,
             },
           },
         },

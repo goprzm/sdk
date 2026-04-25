@@ -19,12 +19,13 @@ import type { RwContext } from "./lib/types.js";
 import { generateNonce } from "./lib/utils";
 import { BUILD_ID_HEADER } from "./client/staleAsset.js";
 
-// Build-id is injected at build time via `import.meta.env.RWSDK_BUILD_ID` (see
+// Build-id is injected at build time via `__RWSDK_BUILD_ID__` define (see
 // `vite/buildIdPlugin.mts`). It identifies the current deploy so old clients
 // can detect a deploy boundary on RSC navigation and reload. Defaults to
 // "rwsdk" for environments where the define is absent.
+declare const __RWSDK_BUILD_ID__: string | undefined;
 const RWSDK_BUILD_ID: string =
-  ((import.meta as any)?.env?.RWSDK_BUILD_ID as string | undefined) ?? "rwsdk";
+  typeof __RWSDK_BUILD_ID__ === "string" ? __RWSDK_BUILD_ID__ : "rwsdk";
 
 export * from "./requestInfo/types";
 

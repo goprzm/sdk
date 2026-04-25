@@ -79,13 +79,13 @@ describe("buildIdPlugin", () => {
         { mode: "production" },
       );
 
-      expect(result.define["import.meta.env.RWSDK_BUILD_ID"]).toBe(
+      expect(result.define.__RWSDK_BUILD_ID__).toBe(
         JSON.stringify("fixed-id"),
       );
       for (const env of ["client", "ssr", "worker"] as const) {
-        expect(
-          result.environments[env].define["import.meta.env.RWSDK_BUILD_ID"],
-        ).toBe(JSON.stringify("fixed-id"));
+        expect(result.environments[env].define.__RWSDK_BUILD_ID__).toBe(
+          JSON.stringify("fixed-id"),
+        );
       }
     });
   });

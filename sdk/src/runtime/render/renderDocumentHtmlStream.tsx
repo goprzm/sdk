@@ -13,8 +13,9 @@ import {
 } from "rwsdk/__ssr_bridge";
 import { stitchDocumentAndAppStreams } from "../lib/stitchDocumentAndAppStreams.js";
 
+declare const __RWSDK_BUILD_ID__: string | undefined;
 const RWSDK_BUILD_ID: string =
-  ((import.meta as any)?.env?.RWSDK_BUILD_ID as string | undefined) ?? "rwsdk";
+  typeof __RWSDK_BUILD_ID__ === "string" ? __RWSDK_BUILD_ID__ : "rwsdk";
 
 export const renderDocumentHtmlStream = async ({
   rscPayloadStream,

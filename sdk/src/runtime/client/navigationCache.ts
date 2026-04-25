@@ -36,11 +36,12 @@ interface NavigationCacheState {
 
 const TAB_ID_STORAGE_KEY = "rwsdk-navigation-tab-id";
 
-// Build-id is injected at build time via `import.meta.env.RWSDK_BUILD_ID` (see
+// Build-id is injected at build time via `__RWSDK_BUILD_ID__` define (see
 // `vite/buildIdPlugin.mts`). Falling back to "rwsdk" preserves the previous
 // stable namespace when the define is absent (e.g. ad-hoc test environments).
+declare const __RWSDK_BUILD_ID__: string | undefined;
 const BUILD_ID: string =
-  ((import.meta as any)?.env?.RWSDK_BUILD_ID as string | undefined) ?? "rwsdk";
+  typeof __RWSDK_BUILD_ID__ === "string" ? __RWSDK_BUILD_ID__ : "rwsdk";
 
 let cacheState: NavigationCacheState | null = null;
 
