@@ -6,10 +6,8 @@ import {
 } from "./navigationCache.js";
 import {
   performStaleAssetReload,
-  readBootBuildId,
   readResponseBuildId,
-  type StaleAssetGuardMode,
-  type StaleAssetHandler,
+  RWSDK_BUILD_ID,
 } from "./staleAsset.js";
 
 export type { NavigationCache, NavigationCacheStorage };
@@ -19,26 +17,6 @@ export interface ClientNavigationOptions {
   scrollToTop?: boolean;
   scrollBehavior?: "auto" | "smooth" | "instant";
   cacheStorage?: NavigationCacheStorage;
-  /**
-   * Called when the framework detects a stale-asset condition (build-id
-   * mismatch on an RSC response, RSC deserialization failure that looks like a
-   * chunk-load error, etc.) before the framework reloads. Return `false` to
-   * suppress the automatic reload — the application is then responsible for
-   * recovery (e.g. showing a "new version available" banner). Defaults to
-   * automatic reload.
-   */
-  onStaleAsset?: StaleAssetHandler;
-  /**
-   * How aggressively to guard against reload loops.
-   *
-   * - `"session-storage"` (default): use sessionStorage to ensure at most one
-   *   reload per detected boundary per tab. Belt-and-suspenders for transient
-   *   edge-cache races where the reloaded HTML still carries the old build-id.
-   * - `"header-only"`: rely solely on the `Cache-Control: no-cache,
-   *   must-revalidate` header on the SSR HTML. Cleaner state but trades the
-   *   defensive guard for the rare CDN edge case.
-   */
-  staleAssetGuard?: StaleAssetGuardMode;
 }
 
 export function validateClickEvent(event: MouseEvent, target: HTMLElement) {
@@ -105,25 +83,14 @@ export interface NavigateOptions {
   };
 }
 
-// Memoized boot-time build-id read. Looked up lazily so test environments
-// can install a `document` mock before the first handleResponse call.
-let cachedBootBuildId: string | null | undefined;
-const getBootBuildId = (): string | null => {
-  if (cachedBootBuildId === undefined) {
-    cachedBootBuildId = readBootBuildId();
-  }
-  return cachedBootBuildId;
-};
-
-export const __resetStaleAssetStateForTests = () => {
-  cachedBootBuildId = undefined;
-  pendingNavigationHref = null;
-};
-
 // Tracks the most recent navigation target so handleResponse can full-reload
 // to the URL the user was navigating toward (rather than the previous URL,
 // which is what window.location reads during an in-flight nav).
 let pendingNavigationHref: string | null = null;
+
+export const __resetStaleAssetStateForTests = () => {
+  pendingNavigationHref = null;
+};
 
 export async function navigate(
   href: string,
@@ -306,26 +273,21 @@ export function initClientNavigation(opts: ClientNavigationOptions = {}) {
     }
 
     // Build-id check: if this RSC response was rendered by a worker on a
-    // different deploy than the one this client booted from, the response
-    // body almost certainly references client component IDs that don't exist
-    // in our virtual:use-client-lookup mapping. Reload to land on fresh code
-    // instead of trying to deserialize against a stale module map.
-    const bootBuildId = getBootBuildId();
+    // different deploy than the one this client was built against, the
+    // response body almost certainly references client component IDs that
+    // don't exist in our virtual:use-client-lookup mapping. Reload to land
+    // on fresh code instead of trying to deserialize against a stale
+    // module map. Mirrors Next.js's `X-Deployment-ID` check and React
+    // Router v7's manifest-version check.
     const serverBuildId = readResponseBuildId(response);
-    if (
-      bootBuildId &&
-      serverBuildId &&
-      serverBuildId !== bootBuildId
-    ) {
+    if (serverBuildId !== null && serverBuildId !== RWSDK_BUILD_ID) {
       const reloaded = performStaleAssetReload({
         detail: {
           reason: "build-id-mismatch",
-          bootBuildId,
+          bootBuildId: RWSDK_BUILD_ID,
           serverBuildId,
         },
         href: pendingNavigationHref ?? window.location.href,
-        guard: opts.staleAssetGuard ?? "session-storage",
-        onStaleAsset: opts.onStaleAsset,
       });
       if (reloaded) {
         return false;

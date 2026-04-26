@@ -34,14 +34,14 @@ interface NavigationCacheState {
   buildId: string;
 }
 
+import { RWSDK_BUILD_ID } from "./staleAsset.js";
+
 const TAB_ID_STORAGE_KEY = "rwsdk-navigation-tab-id";
 
-// Build-id is injected at build time via `__RWSDK_BUILD_ID__` define (see
-// `vite/buildIdPlugin.mts`). Falling back to "rwsdk" preserves the previous
-// stable namespace when the define is absent (e.g. ad-hoc test environments).
-declare const __RWSDK_BUILD_ID__: string | undefined;
-const BUILD_ID: string =
-  typeof __RWSDK_BUILD_ID__ === "string" ? __RWSDK_BUILD_ID__ : "rwsdk";
+// Namespace the prefetch cache by the framework's build-id so old cache
+// entries from prior deploys are naturally orphaned. See
+// `vite/buildIdPlugin.mts`.
+const BUILD_ID = RWSDK_BUILD_ID;
 
 let cacheState: NavigationCacheState | null = null;
 

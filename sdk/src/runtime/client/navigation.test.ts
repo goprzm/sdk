@@ -276,12 +276,12 @@ describe("initClientNavigation", () => {
 });
 
 // Stale-asset detection: handleResponse compares X-Rwsdk-Build-Id from RSC
-// responses against the boot-time meta tag and triggers a guarded full-page
-// reload when they diverge.
+// responses against this client's compile-time RWSDK_BUILD_ID and triggers
+// a guarded full-page reload when they diverge. Mirrors the pattern used by
+// Next.js (`X-Deployment-ID`) and React Router v7 (manifest version).
 describe("handleResponse build-id mismatch", () => {
   // Typed as `any` to keep the test ergonomics simple — vitest's `Mock` type
-  // doesn't expose call signatures the way a plain function does, so direct
-  // invocation needs the looser type.
+  // doesn't expose call signatures the way a plain function does.
   let sessionStorage: any;
   let dispatchEvent: any;
 
@@ -304,12 +304,6 @@ describe("handleResponse build-id mismatch", () => {
 
     vi.stubGlobal("document", {
       addEventListener: vi.fn(),
-      querySelector: vi.fn((selector: string) => {
-        if (selector === 'meta[name="rwsdk-build-id"]') {
-          return { content: "boot-build-id" };
-        }
-        return null;
-      }),
     });
     vi.stubGlobal("window", {
       location: { href: "http://localhost/", reload: vi.fn() },
@@ -337,17 +331,19 @@ describe("handleResponse build-id mismatch", () => {
       headers: new (globalThis as any).Headers(init),
     }) as unknown as Response;
 
-  it("reloads when the response build-id differs from the boot build-id", () => {
+  it("reloads when the response build-id differs from the client's", () => {
     const { handleResponse } = initClientNavigation();
 
+    // Without Vite's `define`, RWSDK_BUILD_ID resolves to the fallback
+    // string "rwsdk". A response with a different build-id is therefore
+    // a mismatch.
     const result = handleResponse(
       responseWithHeaders({ "x-rwsdk-build-id": "deploy-v2" }),
     );
 
     expect(result).toBe(false);
-    expect(window.location.href).toBe("http://localhost/");
     expect(sessionStorage.setItem).toHaveBeenCalledWith(
-      "rwsdk:build-mismatch-reload",
+      "rwsdk:stale-asset-reload",
       "1",
     );
     expect(dispatchEvent).toHaveBeenCalledTimes(1);
@@ -357,20 +353,20 @@ describe("handleResponse build-id mismatch", () => {
     };
     expect(dispatched.type).toBe("rwsdk:stale-asset");
     expect(dispatched.detail.reason).toBe("build-id-mismatch");
-    expect(dispatched.detail.bootBuildId).toBe("boot-build-id");
+    expect(dispatched.detail.bootBuildId).toBe("rwsdk");
     expect(dispatched.detail.serverBuildId).toBe("deploy-v2");
   });
 
-  it("passes through when the response build-id matches", () => {
+  it("passes through when the response build-id matches the client's", () => {
     const { handleResponse } = initClientNavigation();
 
     const result = handleResponse(
-      responseWithHeaders({ "x-rwsdk-build-id": "boot-build-id" }),
+      responseWithHeaders({ "x-rwsdk-build-id": "rwsdk" }),
     );
 
     expect(result).toBe(true);
     expect(sessionStorage.setItem).not.toHaveBeenCalledWith(
-      "rwsdk:build-mismatch-reload",
+      "rwsdk:stale-asset-reload",
       "1",
     );
     expect(dispatchEvent).not.toHaveBeenCalled();
@@ -385,24 +381,8 @@ describe("handleResponse build-id mismatch", () => {
     expect(dispatchEvent).not.toHaveBeenCalled();
   });
 
-  it("respects an onStaleAsset callback returning false", () => {
-    const onStaleAsset = vi.fn().mockReturnValue(false);
-    const { handleResponse } = initClientNavigation({ onStaleAsset });
-
-    const result = handleResponse(
-      responseWithHeaders({ "x-rwsdk-build-id": "deploy-v3" }),
-    );
-
-    // The callback opted out of automatic reload, so handleResponse passes
-    // through (returns true). The application is now responsible for the
-    // recovery UX.
-    expect(result).toBe(true);
-    expect(onStaleAsset).toHaveBeenCalledTimes(1);
-    expect(window.location.href).toBe("http://localhost/");
-  });
-
   it("does not double-reload when the guard key is already set", () => {
-    sessionStorage.setItem("rwsdk:build-mismatch-reload", "1");
+    sessionStorage.setItem("rwsdk:stale-asset-reload", "1");
     const { handleResponse } = initClientNavigation();
 
     const result = handleResponse(

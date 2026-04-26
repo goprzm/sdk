@@ -1,9 +1,5 @@
 import { type DocumentProps } from "../lib/types.js";
 import { type RequestInfo } from "../requestInfo/types.js";
-import {
-  BUILD_ID_META_NAME,
-  bootstrapErrorGuardScript,
-} from "../client/staleAsset.js";
 import { Preloads } from "./preloads.js";
 import { Stylesheets } from "./stylesheets.js";
 
@@ -12,10 +8,6 @@ import {
   renderHtmlStream,
 } from "rwsdk/__ssr_bridge";
 import { stitchDocumentAndAppStreams } from "../lib/stitchDocumentAndAppStreams.js";
-
-declare const __RWSDK_BUILD_ID__: string | undefined;
-const RWSDK_BUILD_ID: string =
-  typeof __RWSDK_BUILD_ID__ === "string" ? __RWSDK_BUILD_ID__ : "rwsdk";
 
 export const renderDocumentHtmlStream = async ({
   rscPayloadStream,
@@ -51,18 +43,6 @@ export const renderDocumentHtmlStream = async ({
   // Create the outer document with a marker for injection
   const documentElement = (
     <Document {...requestInfo}>
-      {/* Build-id meta is read by the client at boot and compared against the
-          X-Rwsdk-Build-Id header on every RSC response to detect deploy
-          boundaries. See runtime/client/staleAsset.ts. */}
-      <meta name={BUILD_ID_META_NAME} content={RWSDK_BUILD_ID} />
-      {/* Pre-hydrate guard: catches module-script load failures before any
-          client code runs (e.g. when client.tsx itself 404s mid CDN
-          propagation). Inlined as a string so it executes synchronously
-          without its own module fetch. */}
-      <script
-        nonce={requestInfo.rw.nonce}
-        dangerouslySetInnerHTML={{ __html: bootstrapErrorGuardScript }}
-      />
       <script
         nonce={requestInfo.rw.nonce}
         dangerouslySetInnerHTML={{

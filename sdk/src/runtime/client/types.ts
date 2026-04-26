@@ -36,8 +36,6 @@ export function isActionResponse(value: unknown): value is ActionResponseMeta {
   );
 }
 
-import type { StaleAssetGuardMode, StaleAssetHandler } from "./staleAsset.js";
-
 export type TransportContext = {
   setRscPayload: <Result>(v: Promise<RscActionResponse<Result>>) => void;
   handleResponse?: (response: Response) => boolean; // Returns false to stop normal processing
@@ -53,16 +51,6 @@ export type TransportContext = {
    * default behaviour (e.g. redirects) should be skipped.
    */
   onActionResponse?: (actionResponse: ActionResponseData) => boolean | void;
-  /**
-   * Optional handler invoked when the framework detects a stale-asset
-   * condition. Returning `false` suppresses the automatic reload.
-   */
-  onStaleAsset?: StaleAssetHandler;
-  /**
-   * Loop-prevention strategy for stale-asset reloads. Defaults to
-   * `"session-storage"`.
-   */
-  staleAssetGuard?: StaleAssetGuardMode;
 };
 
 export type Transport = (context: TransportContext) => CallServerCallback;

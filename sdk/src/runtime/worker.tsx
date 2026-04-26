@@ -17,15 +17,7 @@ import { ssrWebpackRequire } from "./imports/worker";
 import { Route, defineRoutes } from "./lib/router";
 import type { RwContext } from "./lib/types.js";
 import { generateNonce } from "./lib/utils";
-import { BUILD_ID_HEADER } from "./client/staleAsset.js";
-
-// Build-id is injected at build time via `__RWSDK_BUILD_ID__` define (see
-// `vite/buildIdPlugin.mts`). It identifies the current deploy so old clients
-// can detect a deploy boundary on RSC navigation and reload. Defaults to
-// "rwsdk" for environments where the define is absent.
-declare const __RWSDK_BUILD_ID__: string | undefined;
-const RWSDK_BUILD_ID: string =
-  typeof __RWSDK_BUILD_ID__ === "string" ? __RWSDK_BUILD_ID__ : "rwsdk";
+import { BUILD_ID_HEADER, RWSDK_BUILD_ID } from "./client/staleAsset.js";
 
 export * from "./requestInfo/types";
 

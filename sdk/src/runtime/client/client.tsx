@@ -25,14 +25,11 @@ export type { ActionResponseData } from "./types";
 
 import { getCachedNavigationResponse } from "./navigationCache.js";
 import {
-  classifyAsStaleAsset,
   clearStaleAssetGuards,
   performStaleAssetReload,
-  readBootBuildId,
   readResponseBuildId,
+  RWSDK_BUILD_ID,
   RwsdkStaleAssetError,
-  type StaleAssetGuardMode,
-  type StaleAssetHandler,
 } from "./staleAsset.js";
 import type {
   ActionResponseData,
@@ -47,54 +44,10 @@ export {
   RwsdkStaleAssetError,
   STALE_ASSET_EVENT,
   type StaleAssetEventDetail,
-  type StaleAssetGuardMode,
-  type StaleAssetHandler,
   type StaleAssetReason,
 } from "./staleAsset.js";
 
-const handleStaleAssetFromCreateFromFetch = (
-  error: unknown,
-  response: Response,
-  options: {
-    onStaleAsset?: StaleAssetHandler;
-    staleAssetGuard?: StaleAssetGuardMode;
-  },
-): RwsdkStaleAssetError | null => {
-  const bootBuildId = readBootBuildId();
-  const serverBuildId = readResponseBuildId(response);
-  const buildIdMismatch =
-    bootBuildId !== null &&
-    serverBuildId !== null &&
-    serverBuildId !== bootBuildId;
-  const looksStale = classifyAsStaleAsset(error);
-
-  if (!buildIdMismatch && !looksStale) {
-    return null;
-  }
-
-  const detail = {
-    reason: buildIdMismatch
-      ? ("build-id-mismatch" as const)
-      : ("rsc-deserialization-failed" as const),
-    bootBuildId,
-    serverBuildId,
-    error,
-  };
-
-  performStaleAssetReload({
-    detail,
-    guard: options.staleAssetGuard ?? "session-storage",
-    onStaleAsset: options.onStaleAsset,
-  });
-
-  return new RwsdkStaleAssetError(detail);
-};
-
 export const fetchTransport: Transport = (transportContext) => {
-  const staleAssetOptions = {
-    onStaleAsset: transportContext.onStaleAsset,
-    staleAssetGuard: transportContext.staleAssetGuard,
-  };
   const fetchCallServer = async <Result,>(
     id: null | string,
     args: null | unknown[],
@@ -181,6 +134,27 @@ export const fetchTransport: Transport = (transportContext) => {
       return rawActionResult as Result;
     };
 
+    // Header-driven stale-asset detection. On RSC deserialization failure,
+    // check whether the response advertises a different X-Rwsdk-Build-Id
+    // than the one this client was built against. If so, the failure is
+    // almost certainly a deploy boundary — surface a typed error and
+    // trigger a single guarded reload. Otherwise let the error propagate
+    // unchanged.
+    const handleAwaitError = (error: unknown, response: Response): never => {
+      const serverBuildId = readResponseBuildId(response);
+      if (serverBuildId !== null && serverBuildId !== RWSDK_BUILD_ID) {
+        const detail = {
+          reason: "build-id-mismatch" as const,
+          bootBuildId: RWSDK_BUILD_ID,
+          serverBuildId,
+          error,
+        };
+        performStaleAssetReload({ detail });
+        throw new RwsdkStaleAssetError(detail);
+      }
+      throw error;
+    };
+
     // If there's a response handler, check the response first
     if (transportContext.handleResponse) {
       const response = await fetchPromise;
@@ -189,12 +163,12 @@ export const fetchTransport: Transport = (transportContext) => {
         return undefined as any;
       }
 
-      // Keep streamData as the unwrapped Promise that createFromFetch returns.
-      // react-server-dom-webpack's thenable carries internal status/value
-      // fields that React.use() relies on for streaming behaviour; wrapping
-      // it (e.g. with .catch) loses those fields and can leave consumers
-      // suspended indefinitely on the wrapped Promise. We attach the
-      // stale-asset detection via try/catch around our own await instead.
+      // Keep streamData as the unwrapped Promise that createFromFetch
+      // returns. react-server-dom-webpack's thenable carries internal
+      // status/value fields that React.use() relies on for streaming;
+      // wrapping it (e.g. with .catch) loses those fields and can leave
+      // consumers suspended indefinitely. Stale-asset detection is done
+      // via try/catch around our own await instead.
       const streamData = createFromFetch(Promise.resolve(response), {
         callServer: fetchCallServer,
       }) as Promise<RscActionResponse<Result>>;
@@ -208,16 +182,7 @@ export const fetchTransport: Transport = (transportContext) => {
           (result as { actionResult: Result }).actionResult,
         );
       } catch (error) {
-        // RSC deserialization failed. If this looks like a stale-asset
-        // condition (chunk URL points to a chunk that no longer exists, or
-        // the response advertises a different build-id than we booted with),
-        // trigger a single guarded reload, then propagate a typed error.
-        const stale = handleStaleAssetFromCreateFromFetch(
-          error,
-          response,
-          staleAssetOptions,
-        );
-        throw stale ?? error;
+        return handleAwaitError(error, response);
       }
     }
 
@@ -243,12 +208,7 @@ export const fetchTransport: Transport = (transportContext) => {
         (result as { actionResult: Result }).actionResult,
       );
     } catch (error) {
-      const stale = handleStaleAssetFromCreateFromFetch(
-        error,
-        response,
-        staleAssetOptions,
-      );
-      throw stale ?? error;
+      return handleAwaitError(error, response);
     }
   };
 
@@ -260,6 +220,11 @@ export const fetchTransport: Transport = (transportContext) => {
  *
  * This function sets up client-side hydration for React Server Components,
  * making the page interactive. Call this from your client entry point.
+ *
+ * Stale-asset detection: rwsdk listens for Vite's `vite:preloadError` event
+ * and compares the `X-Rwsdk-Build-Id` header on RSC responses against the
+ * client's build-time identifier; on mismatch it triggers a single guarded
+ * full-page reload. Apps can observe via `window.addEventListener('rwsdk:stale-asset', ...)`.
  *
  * @param transport - Custom transport for server communication (defaults to fetchTransport)
  * @param hydrateRootOptions - Options passed to React's `hydrateRoot`. Supports all React hydration options including:
@@ -281,33 +246,6 @@ export const fetchTransport: Transport = (transportContext) => {
  * // https://docs.rwsdk.com/guides/frontend/client-side-nav/
  * const { handleResponse, onHydrated } = initClientNavigation();
  * initClient({ handleResponse, onHydrated });
- *
- * @example
- * // With error handling
- * initClient({
- *   hydrateRootOptions: {
- *     onUncaughtError: (error, errorInfo) => {
- *       console.error("Uncaught error:", error);
- *       // Send to monitoring service
- *       sendToSentry(error, errorInfo);
- *     },
- *     onCaughtError: (error, errorInfo) => {
- *       console.error("Caught error:", error);
- *       // Handle errors from error boundaries
- *       sendToSentry(error, errorInfo);
- *     },
- *   },
- * });
- *
- * @example
- * // With custom React hydration options
- * initClient({
- *   hydrateRootOptions: {
- *     onRecoverableError: (error) => {
- *       console.warn("Recoverable error:", error);
- *     },
- *   },
- * });
  */
 export const initClient = async ({
   transport = fetchTransport,
@@ -315,36 +253,37 @@ export const initClient = async ({
   handleResponse,
   onHydrated,
   onActionResponse,
-  onStaleAsset,
-  staleAssetGuard,
 }: {
   transport?: Transport;
   hydrateRootOptions?: HydrationOptions;
   handleResponse?: (response: Response) => boolean;
   onHydrated?: () => void;
   onActionResponse?: (actionResponse: ActionResponseData) => boolean | void;
-  /**
-   * Called when the framework detects a stale-asset condition (deploy
-   * boundary or chunk-load failure during RSC deserialization). Return
-   * `false` to suppress the automatic full-page reload — the application is
-   * then responsible for recovery, e.g. surfacing a "new version available"
-   * banner. Defaults to automatic reload.
-   */
-  onStaleAsset?: StaleAssetHandler;
-  /**
-   * How aggressively to guard against stale-asset reload loops. Defaults to
-   * `"session-storage"`. Set to `"header-only"` to rely solely on the
-   * Cache-Control header on SSR HTML and skip the sessionStorage guard.
-   */
-  staleAssetGuard?: StaleAssetGuardMode;
 } = {}) => {
+  // Listen for Vite's preload-error event. Vite dispatches this on
+  // dynamic-import preload failures across browsers (Chrome, Firefox,
+  // Safari/iOS). When the preload URL points at a chunk that the new
+  // server doesn't have, recover via a guarded full reload. See
+  // https://vite.dev/guide/build#load-error-handling.
+  if (typeof window !== "undefined") {
+    window.addEventListener("vite:preloadError", (event) => {
+      event.preventDefault();
+      performStaleAssetReload({
+        detail: {
+          reason: "preload-error",
+          bootBuildId: RWSDK_BUILD_ID,
+          serverBuildId: null,
+          error: (event as { payload?: unknown })?.payload,
+        },
+      });
+    });
+  }
+
   const transportContext: TransportContext = {
     setRscPayload: () => { },
     handleResponse,
     onHydrated,
     onActionResponse,
-    onStaleAsset,
-    staleAssetGuard,
   };
 
   let transportCallServer = transport(transportContext);
@@ -399,9 +338,9 @@ export const initClient = async ({
 
     React.useEffect(() => {
       if (!streamData) return;
-      // Hydration succeeded against the current deploy, so any stale-asset
-      // boundary that triggered a previous reload is now resolved. Clear the
-      // sessionStorage guards so a future deploy boundary can reload again.
+      // Hydration succeeded against the current deploy, so any prior
+      // stale-asset reload guard can be cleared. A future deploy boundary
+      // is then allowed to reload again.
       clearStaleAssetGuards();
       transportContext.onHydrated?.();
     }, [streamData]);
