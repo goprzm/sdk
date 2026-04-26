@@ -214,7 +214,7 @@ describe("staleAsset", () => {
       expect(listeners.visibilitychange.length).toBe(1);
     });
 
-    it("triggers a reload when the polled buildId differs from the client's", async () => {
+    it("dispatches the stale-asset event but does NOT reload when buildId mismatches (default mode)", async () => {
       fetchMock.mockResolvedValue(
         new Response(JSON.stringify({ buildId: "v2" }), {
           headers: { [BUILD_ID_HEADER]: "v2" },
@@ -231,13 +231,34 @@ describe("staleAsset", () => {
         VERSION_ENDPOINT_PATH,
         expect.objectContaining({ cache: "no-store" }),
       );
+      // Event fires...
       expect(dispatchEvent).toHaveBeenCalledTimes(1);
       const dispatched = dispatchEvent.mock.calls[0]![0] as CustomEvent;
       expect(dispatched.detail.reason).toBe("version-poll-mismatch");
       expect(dispatched.detail.serverBuildId).toBe("v2");
+      // ... but NO reload happens. The reactive build-id check on the next
+      // RSC nav will trigger reload-on-mismatch; this just signals.
+      expect(locationMock.reload).not.toHaveBeenCalled();
+      expect(locationMock.href).toBe("https://example.com/");
     });
 
-    it("does not reload when the polled buildId matches the client's", async () => {
+    it("eagerly reloads on mismatch when onMismatch=\"reload\" is set", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ buildId: "v2" }), {
+          headers: { [BUILD_ID_HEADER]: "v2" },
+        }),
+      );
+      installVersionPolling({ onMismatch: "reload" });
+      await listeners.focus[0]!(new Event("focus"));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(dispatchEvent).toHaveBeenCalledTimes(1);
+      // Reload triggered — locationMock.reload was called.
+      expect(locationMock.reload).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not signal or reload when the polled buildId matches the client's", async () => {
       fetchMock.mockResolvedValue(
         new Response(JSON.stringify({ buildId: RWSDK_BUILD_ID }), {
           headers: { [BUILD_ID_HEADER]: RWSDK_BUILD_ID },
@@ -248,6 +269,7 @@ describe("staleAsset", () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(dispatchEvent).not.toHaveBeenCalled();
+      expect(locationMock.reload).not.toHaveBeenCalled();
     });
 
     it("respects the throttle window", async () => {

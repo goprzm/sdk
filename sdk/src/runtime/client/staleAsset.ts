@@ -179,26 +179,60 @@ export interface InstallVersionPollingOptions {
   throttleMs?: number;
   /** Fetch timeout in ms. Defaults to 5s. */
   timeoutMs?: number;
+  /**
+   * What to do when the polled build-id differs from the client's.
+   *
+   * - `"event-only"` (default): dispatch the `rwsdk:stale-asset` event but
+   *   do not reload. Apps decide what to do — render a "new version
+   *   available" banner, save form state to localStorage, prompt the user,
+   *   etc. The reactive build-id check on the next RSC navigation will
+   *   still trigger a reload, so the deploy boundary is recovered from
+   *   either way.
+   * - `"reload"`: reload immediately on detection. More aggressive — loses
+   *   any in-flight client state (form input, scroll position, etc.).
+   *   Matches the old behaviour of PRZM's `versionWatcher`.
+   *
+   * Mirrors SvelteKit's `$updated` reactive store + opt-in
+   * `data-sveltekit-reload` pattern: detection is proactive, recovery UX
+   * is the application's call.
+   */
+  onMismatch?: "event-only" | "reload";
 }
 
 /**
  * Optional opt-in proactive deploy-boundary detection. Polls the
  * framework's `/__rwsdk/version` endpoint on `visibilitychange` /
  * `focus` / `pageshow` (bfcache restore) — natural break points where
- * reloading is least disruptive — and triggers a guarded reload if the
- * server reports a different build-id than the client was built against.
+ * a deploy boundary is most likely to have happened — and on mismatch
+ * dispatches a `rwsdk:stale-asset` event with reason
+ * `"version-poll-mismatch"`.
  *
- * Without this, deploy boundaries are detected reactively on the next
- * RSC navigation. With it, dormant tabs catch the boundary as soon as
- * the user comes back, before any in-flight RSC request fails.
+ * **By default this does NOT reload the page.** It only signals. Apps
+ * decide what to do via a window event listener — show a banner, prompt
+ * the user, save form state, or simply rely on the reactive build-id
+ * check that fires on the next RSC navigation. Pass `onMismatch: "reload"`
+ * to opt into eager reload.
  *
- * Returns a teardown function that removes the listeners. Safe to call
- * multiple times — the listeners are independent.
+ * Returns a teardown function that removes the listeners.
  *
  * @example
  * ```ts
+ * // Default: detect proactively, signal only — no auto-reload.
  * import { installVersionPolling } from "rwsdk/client";
  * installVersionPolling();
+ *
+ * // App handles the signal — e.g. show a "new version available" banner.
+ * window.addEventListener("rwsdk:stale-asset", (event) => {
+ *   if ((event as CustomEvent).detail.reason === "version-poll-mismatch") {
+ *     showUpdateBanner();
+ *   }
+ * });
+ * ```
+ *
+ * @example
+ * ```ts
+ * // Aggressive: reload immediately when a mismatch is detected.
+ * installVersionPolling({ onMismatch: "reload" });
  * ```
  */
 export function installVersionPolling(
@@ -209,6 +243,7 @@ export function installVersionPolling(
   const endpoint = options.endpoint ?? VERSION_ENDPOINT_PATH;
   const throttleMs = options.throttleMs ?? 30_000;
   const timeoutMs = options.timeoutMs ?? 5_000;
+  const onMismatch = options.onMismatch ?? "event-only";
 
   let lastCheckedAt = 0;
   let inFlight = false;
@@ -248,13 +283,28 @@ export function installVersionPolling(
     try {
       const serverBuildId = await fetchServerBuildId();
       if (serverBuildId && serverBuildId !== RWSDK_BUILD_ID) {
-        performStaleAssetReload({
-          detail: {
-            reason: "version-poll-mismatch",
-            bootBuildId: RWSDK_BUILD_ID,
-            serverBuildId,
-          },
-        });
+        const detail: StaleAssetEventDetail = {
+          reason: "version-poll-mismatch",
+          bootBuildId: RWSDK_BUILD_ID,
+          serverBuildId,
+        };
+        if (onMismatch === "reload") {
+          performStaleAssetReload({ detail });
+        } else if (typeof CustomEvent === "function") {
+          // Signal-only: dispatch the event but don't reload. Apps that
+          // want eager reload pass onMismatch: "reload"; apps that want
+          // a banner / draft-save listen for this event and act on it.
+          // The reactive header check on the next RSC nav will still
+          // trigger reload-on-mismatch — so the deploy boundary is
+          // recovered from either way.
+          try {
+            window.dispatchEvent(
+              new CustomEvent(STALE_ASSET_EVENT, { detail }),
+            );
+          } catch {
+            /* eventing is best-effort */
+          }
+        }
       }
     } finally {
       inFlight = false;

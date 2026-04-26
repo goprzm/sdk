@@ -44,16 +44,32 @@ All three surfaces feed `performStaleAssetReload` in `runtime/client/staleAsset.
 
 A pre-hydrate inline script (which would catch case 3) is intentionally **not** injected by the framework. Apps that need bootstrap-time recovery for client-script 404s should rely on `Cache-Control: no-cache` on entry HTML so the next refresh by the user fetches fresh HTML pointing at the new entry-script URL. None of the surveyed production frameworks (Next.js, React Router v7, SvelteKit, Astro) inject pre-hydrate guards either.
 
-### Optional: proactive polling
+### Optional: proactive polling (signal-only by default)
 
-`installVersionPolling()` (exported from `rwsdk/client`) is opt-in. When called, it registers `visibilitychange` / `focus` / `pageshow` (bfcache restore) listeners that fetch `/__rwsdk/version` (throttled to 30s by default) and trigger the same reload helper on mismatch. This catches deploy boundaries on dormant tabs *before* the user's next interaction triggers an RSC navigation.
+`installVersionPolling()` (exported from `rwsdk/client`) is opt-in. When called, it registers `visibilitychange` / `focus` / `pageshow` (bfcache restore) listeners that fetch `/__rwsdk/version` (throttled to 30s by default).
+
+**By default this dispatches the `rwsdk:stale-asset` event but does not reload.** The application decides what to do with the signal — render a "new version available" banner, save form state to localStorage, prompt the user, or simply rely on the reactive build-id check that fires on the next RSC navigation. This is the SvelteKit pattern (`$updated` reactive store + opt-in `data-sveltekit-reload`): detection is proactive; recovery UX is the application's call.
+
+The default avoids a known footgun: a user mid-form-fill switches tabs to look up reference info, a deploy ships, the user comes back, and an aggressive auto-reload would wipe their in-flight state. Apps can still get the aggressive behavior by passing `onMismatch: "reload"`.
 
 ```ts
+// Default: detect proactively, signal only.
 import { installVersionPolling } from "rwsdk/client";
+installVersionPolling();
 
-const teardown = installVersionPolling();
-// optional: teardown?.()
+// App handles the signal.
+window.addEventListener("rwsdk:stale-asset", (event) => {
+  const detail = (event as CustomEvent).detail;
+  if (detail.reason === "version-poll-mismatch") {
+    showUpdateBanner(); // app-defined
+  }
+});
+
+// Or aggressive: reload immediately on detection (matches PRZM's old versionWatcher).
+installVersionPolling({ onMismatch: "reload" });
 ```
+
+Even when the application doesn't act on the signal, recovery still happens — the reactive build-id check on the next RSC navigation triggers the reload. The polling helper is purely an early-warning channel.
 
 ### Loop prevention
 
