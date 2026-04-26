@@ -297,16 +297,15 @@ export const defineApp = <
 
           const responseHeaders = new Headers(userResponseInit.headers);
           responseHeaders.set("content-type", "text/html; charset=utf-8");
-          // The chunks the document references are content-hashed and may be
-          // cached forever; the entry HTML itself must always revalidate so
-          // browsers fetch the latest build-id rather than reading stale HTML
-          // out of an edge cache during/after a deploy.
-          if (!responseHeaders.has("cache-control")) {
-            responseHeaders.set(
-              "cache-control",
-              "no-cache, must-revalidate",
-            );
-          }
+          // For the build-id mismatch reload to recover cleanly, the entry
+          // HTML must not be served from an edge cache that pre-dates the
+          // latest deploy. Apps using rwsdk's stale-asset detection should
+          // configure their CDN / Worker to set
+          //   Cache-Control: no-cache, must-revalidate
+          // on entry HTML responses (or otherwise revalidate per request).
+          // We don't set this header by default because cache policy is
+          // application/CDN territory; mirroring how Next.js, Remix, and
+          // SvelteKit document the requirement rather than imposing it.
           responseHeaders.set(BUILD_ID_HEADER, RWSDK_BUILD_ID);
 
           return new Response(html, {
