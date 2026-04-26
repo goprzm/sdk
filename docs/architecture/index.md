@@ -17,6 +17,9 @@ This collection of documents provides a high-level overview of the core architec
 - [**Dev Server Stability**](./devServerStability.md)
   Explains the multi-layered system that ensures a stable development experience, detailing how the framework handles race conditions and state desynchronization during Vite's dependency re-optimization process.
 
+- [**Stale-Asset Detection at Deploy Boundaries**](./staleAssetDetection.md)
+  Describes how the framework detects and recovers from deploy boundaries (when an old client tab references JS chunks or RSC client-component IDs that no longer exist on the new server). Covers the build-id exchange (`X-Rwsdk-Build-Id` header + `/__rwsdk/version` endpoint), the `vite:preloadError` listener, the `handleResponse` build-id check, and the optional `installVersionPolling` proactive helper.
+
 - [**Directive Scanning and Module Resolution**](./directiveScanningAndResolution.md)
   Details the internal `esbuild`-based scanner used to discover `"use client"` and `"use server"` directives, and the context-aware module resolution it employs to handle conditional exports correctly.
 

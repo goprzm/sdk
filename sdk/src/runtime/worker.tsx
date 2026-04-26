@@ -128,6 +128,23 @@ export const defineApp = <
             },
           },
         );
+      } else if (new URL(request.url).pathname === "/__rwsdk/version") {
+        // Framework-owned skew-protection endpoint. Apps can poll this from
+        // the client (see `installVersionPolling()` in `rwsdk/client`) to
+        // detect deploy boundaries proactively without depending on the
+        // app's HTML cache policy. The framework controls the cache headers
+        // here because this URL belongs to the framework — apps can keep
+        // their entry HTML cached however they like. Mirrors React Router
+        // v7's `/__manifest` and Next.js's `deploymentId` pattern.
+        return Response.json(
+          { buildId: RWSDK_BUILD_ID },
+          {
+            headers: {
+              "cache-control": "no-cache, must-revalidate",
+              [BUILD_ID_HEADER]: RWSDK_BUILD_ID,
+            },
+          },
+        );
       }
 
       try {
@@ -297,15 +314,14 @@ export const defineApp = <
 
           const responseHeaders = new Headers(userResponseInit.headers);
           responseHeaders.set("content-type", "text/html; charset=utf-8");
-          // For the build-id mismatch reload to recover cleanly, the entry
-          // HTML must not be served from an edge cache that pre-dates the
-          // latest deploy. Apps using rwsdk's stale-asset detection should
-          // configure their CDN / Worker to set
-          //   Cache-Control: no-cache, must-revalidate
-          // on entry HTML responses (or otherwise revalidate per request).
-          // We don't set this header by default because cache policy is
-          // application/CDN territory; mirroring how Next.js, Remix, and
-          // SvelteKit document the requirement rather than imposing it.
+          // For the build-id mismatch *recovery* path to land cleanly on a
+          // fresh bundle, the entry HTML the framework reloads to must not
+          // be a stale edge-cached response. Apps that want guaranteed
+          // recovery should ensure their entry HTML revalidates per
+          // request (e.g. `Cache-Control: no-cache, must-revalidate`).
+          // Detection itself works regardless: build-id flows on this
+          // header on every request, and the framework-owned
+          // `/__rwsdk/version` endpoint always revalidates.
           responseHeaders.set(BUILD_ID_HEADER, RWSDK_BUILD_ID);
 
           return new Response(html, {

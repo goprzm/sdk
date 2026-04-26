@@ -41,8 +41,11 @@ import type {
 import { isActionResponse } from "./types";
 
 export {
+  installVersionPolling,
   RwsdkStaleAssetError,
   STALE_ASSET_EVENT,
+  VERSION_ENDPOINT_PATH,
+  type InstallVersionPollingOptions,
   type StaleAssetEventDetail,
   type StaleAssetReason,
 } from "./staleAsset.js";

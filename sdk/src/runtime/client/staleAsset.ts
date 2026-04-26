@@ -26,7 +26,10 @@ export const STALE_ASSET_EVENT = "rwsdk:stale-asset";
 
 const RELOAD_GUARD_KEY = "rwsdk:stale-asset-reload";
 
-export type StaleAssetReason = "build-id-mismatch" | "preload-error";
+export type StaleAssetReason =
+  | "build-id-mismatch"
+  | "preload-error"
+  | "version-poll-mismatch";
 
 export interface StaleAssetEventDetail {
   reason: StaleAssetReason;
@@ -161,3 +164,125 @@ export const performStaleAssetReload = (
   }
   return true;
 };
+
+/**
+ * URL of the framework's skew-protection endpoint. The framework's worker
+ * auto-mounts a route at this path that returns `{ buildId }` with
+ * `Cache-Control: no-cache, must-revalidate`.
+ */
+export const VERSION_ENDPOINT_PATH = "/__rwsdk/version";
+
+export interface InstallVersionPollingOptions {
+  /** Endpoint to poll. Defaults to `/__rwsdk/version`. */
+  endpoint?: string;
+  /** Minimum interval between checks in ms. Defaults to 30s. */
+  throttleMs?: number;
+  /** Fetch timeout in ms. Defaults to 5s. */
+  timeoutMs?: number;
+}
+
+/**
+ * Optional opt-in proactive deploy-boundary detection. Polls the
+ * framework's `/__rwsdk/version` endpoint on `visibilitychange` /
+ * `focus` / `pageshow` (bfcache restore) — natural break points where
+ * reloading is least disruptive — and triggers a guarded reload if the
+ * server reports a different build-id than the client was built against.
+ *
+ * Without this, deploy boundaries are detected reactively on the next
+ * RSC navigation. With it, dormant tabs catch the boundary as soon as
+ * the user comes back, before any in-flight RSC request fails.
+ *
+ * Returns a teardown function that removes the listeners. Safe to call
+ * multiple times — the listeners are independent.
+ *
+ * @example
+ * ```ts
+ * import { installVersionPolling } from "rwsdk/client";
+ * installVersionPolling();
+ * ```
+ */
+export function installVersionPolling(
+  options: InstallVersionPollingOptions = {},
+): (() => void) | undefined {
+  if (typeof window === "undefined") return;
+
+  const endpoint = options.endpoint ?? VERSION_ENDPOINT_PATH;
+  const throttleMs = options.throttleMs ?? 30_000;
+  const timeoutMs = options.timeoutMs ?? 5_000;
+
+  let lastCheckedAt = 0;
+  let inFlight = false;
+
+  const fetchServerBuildId = async (): Promise<string | null> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(endpoint, {
+        cache: "no-store",
+        credentials: "omit",
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      const headerId = readResponseBuildId(response);
+      if (headerId) return headerId;
+      const body = (await response.json().catch(() => null)) as
+        | { buildId?: unknown }
+        | null;
+      return typeof body?.buildId === "string" ? body.buildId : null;
+    } catch {
+      // Transient network blips are expected — stay silent. Reactive
+      // detection on the next RSC navigation will still catch any real
+      // deploy boundary.
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const check = async () => {
+    if (inFlight) return;
+    const now = Date.now();
+    if (now - lastCheckedAt < throttleMs) return;
+    lastCheckedAt = now;
+    inFlight = true;
+    try {
+      const serverBuildId = await fetchServerBuildId();
+      if (serverBuildId && serverBuildId !== RWSDK_BUILD_ID) {
+        performStaleAssetReload({
+          detail: {
+            reason: "version-poll-mismatch",
+            bootBuildId: RWSDK_BUILD_ID,
+            serverBuildId,
+          },
+        });
+      }
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  const onVisibilityChange = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      void check();
+    }
+  };
+  const onFocus = () => void check();
+  const onPageShow = (event: PageTransitionEvent) => {
+    // bfcache restore: in-memory bundle may be multiple deploys stale.
+    if (event.persisted) void check();
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+  window.addEventListener("focus", onFocus);
+  window.addEventListener("pageshow", onPageShow);
+
+  return () => {
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }
+    window.removeEventListener("focus", onFocus);
+    window.removeEventListener("pageshow", onPageShow);
+  };
+}

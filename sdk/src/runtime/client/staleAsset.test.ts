@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   BUILD_ID_HEADER,
+  installVersionPolling,
   RWSDK_BUILD_ID,
   RwsdkStaleAssetError,
   STALE_ASSET_EVENT,
+  VERSION_ENDPOINT_PATH,
   clearStaleAssetGuards,
   performStaleAssetReload,
   readResponseBuildId,
@@ -154,6 +156,120 @@ describe("staleAsset", () => {
 
       expect(error.reason).toBe("preload-error");
       expect(error.serverBuildId).toBeNull();
+    });
+  });
+
+  describe("installVersionPolling", () => {
+    let listeners: Record<string, Array<(event: any) => void>>;
+    let documentVisibility: "visible" | "hidden";
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      listeners = { focus: [], pageshow: [], visibilitychange: [] };
+      documentVisibility = "visible";
+
+      const window = {
+        sessionStorage,
+        location: locationMock,
+        dispatchEvent,
+        addEventListener: vi.fn((event: string, handler: any) => {
+          (listeners[event] ??= []).push(handler);
+        }),
+        removeEventListener: vi.fn((event: string, handler: any) => {
+          listeners[event] = (listeners[event] ?? []).filter((h) => h !== handler);
+        }),
+      };
+      vi.stubGlobal("window", window);
+      vi.stubGlobal("document", {
+        get visibilityState() {
+          return documentVisibility;
+        },
+        addEventListener: vi.fn((event: string, handler: any) => {
+          (listeners[event] ??= []).push(handler);
+        }),
+        removeEventListener: vi.fn((event: string, handler: any) => {
+          listeners[event] = (listeners[event] ?? []).filter((h) => h !== handler);
+        }),
+      });
+      vi.stubGlobal(
+        "AbortController",
+        class {
+          signal = {};
+          abort() {}
+        },
+      );
+      fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    it("returns undefined when window is not defined", () => {
+      vi.stubGlobal("window", undefined);
+      expect(installVersionPolling()).toBeUndefined();
+    });
+
+    it("registers focus, pageshow, and visibilitychange listeners", () => {
+      installVersionPolling();
+      expect(listeners.focus.length).toBe(1);
+      expect(listeners.pageshow.length).toBe(1);
+      expect(listeners.visibilitychange.length).toBe(1);
+    });
+
+    it("triggers a reload when the polled buildId differs from the client's", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ buildId: "v2" }), {
+          headers: { [BUILD_ID_HEADER]: "v2" },
+        }),
+      );
+      installVersionPolling();
+      // Simulate a focus event
+      await listeners.focus[0]!(new Event("focus"));
+      // Allow any microtasks queued by the async check to resolve
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        VERSION_ENDPOINT_PATH,
+        expect.objectContaining({ cache: "no-store" }),
+      );
+      expect(dispatchEvent).toHaveBeenCalledTimes(1);
+      const dispatched = dispatchEvent.mock.calls[0]![0] as CustomEvent;
+      expect(dispatched.detail.reason).toBe("version-poll-mismatch");
+      expect(dispatched.detail.serverBuildId).toBe("v2");
+    });
+
+    it("does not reload when the polled buildId matches the client's", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ buildId: RWSDK_BUILD_ID }), {
+          headers: { [BUILD_ID_HEADER]: RWSDK_BUILD_ID },
+        }),
+      );
+      installVersionPolling();
+      await listeners.focus[0]!(new Event("focus"));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(dispatchEvent).not.toHaveBeenCalled();
+    });
+
+    it("respects the throttle window", async () => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ buildId: RWSDK_BUILD_ID })),
+      );
+      installVersionPolling({ throttleMs: 60_000 });
+      await listeners.focus[0]!(new Event("focus"));
+      await listeners.focus[0]!(new Event("focus"));
+      await listeners.focus[0]!(new Event("focus"));
+      await Promise.resolve();
+      // Two re-fires within the throttle window should still only call fetch once
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns a teardown function that removes listeners", () => {
+      const teardown = installVersionPolling();
+      expect(listeners.focus.length).toBe(1);
+      teardown!();
+      expect(listeners.focus.length).toBe(0);
+      expect(listeners.pageshow.length).toBe(0);
+      expect(listeners.visibilitychange.length).toBe(0);
     });
   });
 });
