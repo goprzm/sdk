@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - next
     paths-ignore:
       - "docs/**"
       - ".notes/**"
@@ -111,7 +112,7 @@ jobs:
       RWSDK_SEQUENTIAL: "1"
 
     # context(justinvdm, 2025-09-20):
-    # Only run this job for PRs from the same repository and pushes to main
+    # Only run this job for PRs from the same repository and pushes to main/next
     # For security, GH won't expose secrets for fork PRs
     if: |
       github.event_name == 'push' ||
@@ -201,7 +202,7 @@ jobs:
       RWSDK_SEQUENTIAL: "1"
 
     # context(justinvdm, 2025-09-20):
-    # Only run this job for PRs from the same repository and pushes to main
+    # Only run this job for PRs from the same repository and pushes to main/next
     # For security, GH won't expose secrets for fork PRs
     if: |
       github.event_name == 'push' ||
