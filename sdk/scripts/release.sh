@@ -35,7 +35,7 @@ show_help() {
   echo "      - Temporary files are cleaned up."
   echo ""
   echo "Options:"
-  echo "  --dry               Simulate the release process without making changes"
+  echo "  --dry, --dry-run    Simulate the release process without making changes"
   echo "  --version <v>       Manually specify a version string. MUST be used with the 'explicit' version_type."
   echo "  --skip-smoke-tests  Bypass the smoke testing step. Use with caution."
   echo "  --help              Show this help message"
@@ -53,7 +53,7 @@ show_help() {
 
 validate_args() {
   for arg in "$@"; do
-    if [[ "$arg" == --* && "$arg" != "--dry" && "$arg" != "--help" && "$arg" != "--version" && "$arg" != "--skip-smoke-tests" ]]; then
+    if [[ "$arg" == --* && "$arg" != "--dry" && "$arg" != "--dry-run" && "$arg" != "--help" && "$arg" != "--version" && "$arg" != "--skip-smoke-tests" ]]; then
       echo "Error: Unknown flag '$arg'"
       echo "Use --help to see available options"
       echo ""
@@ -79,7 +79,7 @@ while [[ $i -le $# ]]; do
     --help)
       show_help
       ;;
-    --dry)
+    --dry|--dry-run)
       DRY_RUN=true
       ;;
     --skip-smoke-tests)

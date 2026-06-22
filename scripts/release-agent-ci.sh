@@ -18,7 +18,7 @@ DRY_RUN="${DRY_RUN:-false}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry)
+    --dry|--dry-run)
       DRY_RUN="true"
       CREATE_GH_RELEASE="false"
       ;;
