@@ -2,6 +2,24 @@ import type { Plugin } from "vite";
 import { version as viteVersionString } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
+// context(justinvdm, 2026-06-24):
+// This file implements the Vite 7 compatibility shim. The SDK's plugin layer
+// is written natively for Vite 8 (Rolldown optimizeDeps, rolldownOptions build
+// config, codeSplitting output option). This shim translates those Vite-8-only
+// constructs into the Vite 7 equivalents at runtime, so we can support both
+// majors from one codebase.
+//
+// Key points:
+// - `configEnvironment` translates per-environment config contributed by other
+//   plugins during that hook.
+// - `configResolved` re-translates config added late (e.g. by
+//   knownDepsResolverPlugin, which needs resolved aliases) and installs live
+//   proxies on `build.rolldownOptions` so build-time mutations made by
+//   `buildApp.mts` are mirrored into Vite 7's `rollupOptions`.
+// - `toEsbuildPlugin` translates Rolldown-shaped optimizeDeps plugins into
+//   esbuild plugins, including the null-byte virtual-module convention.
+// - See docs/architecture/vite7Compat.md for the full design.
+
 export interface CompatOptions {
   viteVersion?: number;
 }
