@@ -1,4 +1,5 @@
 import debug from "debug";
+import { writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import colors from "picocolors";
@@ -9,11 +10,21 @@ import {
   Plugin,
   ViteDevServer,
 } from "vite";
+import {
+  VENDOR_CLIENT_BARREL_EXPORT_PATH,
+  VENDOR_SERVER_BARREL_EXPORT_PATH,
+} from "../lib/constants.mjs";
 import { getShortName } from "../lib/getShortName.mjs";
 import { normalizeModulePath } from "../lib/normalizeModulePath.mjs";
+import {
+  getVendorClientBarrelPath,
+  getVendorServerBarrelPath,
+} from "./barrelPaths.mjs";
+import { generateVendorBarrelContent } from "./directiveModulesDevPlugin.mjs";
 import { hasDirective as sourceHasDirective } from "./hasDirective.mjs";
 import { invalidateModule } from "./invalidateModule.mjs";
 import { isJsFile } from "./isJsFile.mjs";
+import { runDirectivesScan } from "./runDirectivesScan.mjs";
 import { VIRTUAL_SSR_PREFIX } from "./ssrVirtualModule.mjs";
 
 const log = debug("rwsdk:vite:hmr-plugin");
@@ -251,6 +262,116 @@ export const miniflareHMRPlugin = (givenOptions: {
       // The worker needs an update, and the hot check is for the worker environment
       // => Notify for custom RSC-based HMR update, then short circuit HMR
       if (isWorkerUpdate && this.environment.name === environment) {
+        // context(chrisvdm, 22 Jun 2026): When a worker file changes it may have imported
+        // a new dependency (or transitive dependency) that contains a directive.
+        // The directive scan only runs once at startup, so run a targeted sub-scan
+        // from the changed file to discover any new directive files and update the
+        // vendor barrels / lookup maps accordingly.
+        const clientFilesBefore = clientFiles.size;
+        const serverFilesBefore = serverFiles.size;
+
+        // context(chrisvdm, 22 Jun 2026): A full directive scan is expensive and
+        // awaiting it here can noticeably delay the HMR reload/refresh while the
+        // scan runs. However, this only happens when a changed worker file imports
+        // a dependency that was not seen in the initial scan (or a previous
+        // sub-scan). For files that were already part of the discovered directive
+        // graph, this branch is skipped. We are aware that blocking HMR for a full
+        // scan is not ideal, and we will monitor how it performs in practice. If it
+        // becomes a bottleneck, we should look into caching scan results and/or
+        // making the sub-scan incremental so we only pay the cost once per new
+        // dependency rather than on every unrelated edit.
+        await runDirectivesScan({
+          rootConfig: ctx.server.config,
+          environments: ctx.server.environments,
+          clientFiles,
+          serverFiles,
+          entries: [ctx.file],
+          esbuildOptions: {},
+        });
+
+        const clientFilesAfter = clientFiles.size;
+        const serverFilesAfter = serverFiles.size;
+
+        if (
+          clientFilesAfter !== clientFilesBefore ||
+          serverFilesAfter !== serverFilesBefore
+        ) {
+          const clientBarrelPath = getVendorClientBarrelPath();
+          const serverBarrelPath = getVendorServerBarrelPath();
+
+          if (clientBarrelPath) {
+            writeFileSync(
+              clientBarrelPath,
+              generateVendorBarrelContent(clientFiles, givenOptions.rootDir),
+            );
+          }
+          if (serverBarrelPath) {
+            writeFileSync(
+              serverBarrelPath,
+              generateVendorBarrelContent(serverFiles, givenOptions.rootDir),
+            );
+          }
+
+          for (const envName of ["client", "ssr", environment]) {
+            if (clientBarrelPath) {
+              invalidateModule(ctx.server, envName, clientBarrelPath);
+            }
+            if (serverBarrelPath) {
+              invalidateModule(ctx.server, envName, serverBarrelPath);
+            }
+            invalidateModule(
+              ctx.server,
+              envName,
+              VENDOR_CLIENT_BARREL_EXPORT_PATH,
+            );
+            invalidateModule(
+              ctx.server,
+              envName,
+              VENDOR_SERVER_BARREL_EXPORT_PATH,
+            );
+          }
+
+          if (clientFilesAfter !== clientFilesBefore) {
+            for (const envName of ["client", "ssr", environment]) {
+              invalidateModule(
+                ctx.server,
+                envName,
+                "virtual:use-client-lookup.js",
+              );
+            }
+            invalidateModule(
+              ctx.server,
+              environment,
+              VIRTUAL_SSR_PREFIX + "/@id/virtual:use-client-lookup.js",
+            );
+            invalidateModule(
+              ctx.server,
+              environment,
+              VIRTUAL_SSR_PREFIX + "virtual:use-client-lookup.js",
+            );
+          }
+
+          if (serverFilesAfter !== serverFilesBefore) {
+            for (const envName of ["client", "ssr", environment]) {
+              invalidateModule(
+                ctx.server,
+                envName,
+                "virtual:use-server-lookup.js",
+              );
+            }
+            invalidateModule(
+              ctx.server,
+              environment,
+              VIRTUAL_SSR_PREFIX + "/@id/virtual:use-server-lookup.js",
+            );
+            invalidateModule(
+              ctx.server,
+              environment,
+              VIRTUAL_SSR_PREFIX + "virtual:use-server-lookup.js",
+            );
+          }
+        }
+
         invalidateModule(ctx.server, environment, ctx.file);
         const shortName = getShortName(ctx.file, ctx.server.config.root);
 
