@@ -12,7 +12,7 @@ on:
       - "src/**/*.test.*"
       - "playground/community/**"
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
     paths-ignore:
       - "docs/**"
       - ".notes/**"
@@ -60,9 +60,11 @@ concurrency:
 env:
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  FULL_PLAYGROUND_E2E_LABEL: run-full-vite-e2e
 
 jobs:
   setup-matrix:
+    if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'run-full-vite-e2e'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -115,10 +117,17 @@ jobs:
     # Only run this job for PRs from the same repository and pushes to main/next
     # For security, GH won't expose secrets for fork PRs
     if: |
-      github.event_name == 'push' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request'
+      (
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'pull_request'
+      ) &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.action != 'labeled' ||
+        github.event.label.name == 'run-full-vite-e2e'
+      )
 
     steps:
       - name: Require approval for external contributors
@@ -205,10 +214,17 @@ jobs:
     # Only run this job for PRs from the same repository and pushes to main/next
     # For security, GH won't expose secrets for fork PRs
     if: |
-      github.event_name == 'push' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request'
+      (
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'pull_request'
+      ) &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.action != 'labeled' ||
+        github.event.label.name == 'run-full-vite-e2e'
+      )
 
     steps:
       - name: Require approval for external contributors
@@ -286,12 +302,20 @@ jobs:
       RWSDK_TEST_MAX_RETRIES_PER_CODE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_call') && '20' || '' }}
       RWSDK_VITE_VERSION: "7"
       RWSDK_SEQUENTIAL: "1"
+      RUN_FULL_PLAYGROUND_E2E: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-full-vite-e2e') }}
 
     if: |
-      github.event_name == 'push' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request'
+      (
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'pull_request'
+      ) &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.action != 'labeled' ||
+        github.event.label.name == 'run-full-vite-e2e'
+      )
 
     steps:
       - name: Require approval for external contributors
@@ -340,15 +364,20 @@ jobs:
         id: tests
         run: |
           pnpm install
-          pnpm test:e2e -- \
-            hello-world/__tests__/e2e.test.mts \
-            kitchen-sink/__tests__/e2e.test.mts \
-            rsc-kitchen-sink/__tests__/e2e.test.mts \
-            directives/__tests__/e2e.test.mts \
-            requestInfo/__tests__/e2e.test.mts \
-            use-synced-state/__tests__/e2e.test.mts \
-            server-functions/__tests__/e2e.test.mts \
-            import-from-use-client/__tests__/e2e.test.mts
+          if [[ "$RUN_FULL_PLAYGROUND_E2E" == "true" ]]; then
+            echo "Running the full Vite 7 playground E2E suite because the '$FULL_PLAYGROUND_E2E_LABEL' label is present."
+            pnpm test:e2e
+          else
+            pnpm test:e2e -- \
+              hello-world/__tests__/e2e.test.mts \
+              kitchen-sink/__tests__/e2e.test.mts \
+              rsc-kitchen-sink/__tests__/e2e.test.mts \
+              directives/__tests__/e2e.test.mts \
+              requestInfo/__tests__/e2e.test.mts \
+              use-synced-state/__tests__/e2e.test.mts \
+              server-functions/__tests__/e2e.test.mts \
+              import-from-use-client/__tests__/e2e.test.mts
+          fi
 
       - name: Upload playground artifacts
         uses: actions/upload-artifact@v7
