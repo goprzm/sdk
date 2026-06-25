@@ -44,6 +44,9 @@ This collection of documents provides a high-level overview of the core architec
 - [**Dev Server Dependency Optimization**](./devServerDependencyOptimization.md)
   Outlines the strategy used to manage dependencies in the development server, providing Vite's dependency optimizer with a complete dependency graph at startup to improve performance and stability.
 
+- [**State Module**](./stateModule.md)
+  Describes `rwsdk/__state`, the centralized virtual state module that keeps framework-level state alive across Vite's development-server re-optimizations.
+
 - [**E2E Testing Infrastructure**](./endToEndTesting.md)
   Outlines the architecture of the end-to-end testing infrastructure, designed for fast and reliable testing of playground applications using a concurrent, suite-level approach.
 
@@ -61,6 +64,9 @@ This collection of documents provides a high-level overview of the core architec
 
 - [**Realtime Shared State Hook**](./realtimeStateHook.md)
   Describes the realtime synced state feature that keeps shared values aligned across browser sessions through the worker runtime, using a Durable Object and CapnWeb RPC surface.
+
+- [**Realtime Shared State Hook (Hibernation Transport)**](./useSyncedStateHibernation.md)
+  Describes the hibernation transport for `useSyncedState`, which uses a stateless Worker WebSocket proxy and a hibernating Durable Object to reduce duration cost while preserving the existing hook API.
 
 - [**Realtime State Error Handling and Offline Queue**](./realtimeStateErrorHandling.md)
   Outlines planned enhancements for error handling, retry logic, and offline queue support in `useSyncedState`, including connection status monitoring and pluggable storage backends.

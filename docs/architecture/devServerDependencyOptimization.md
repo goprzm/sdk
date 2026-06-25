@@ -26,7 +26,7 @@ This happened because the initial optimization pass was only aware of third-part
 
 ## The Solutions
 
-The solution is a two-pronged strategy. First, a proactive dependency scan solves the performance problem and reduces the frequency of re-optimizations. Second, a virtual state module provides true resilience against the state-loss that occurs when a re-optimization is unavoidable.
+The solution is a multi-pronged strategy. A proactive dependency scan solves the performance problem and reduces the frequency of re-optimizations. Stable, framework-controlled barrel files keep the optimizer's entry points predictable. Finally, HMR-triggered sub-scans keep the directive map accurate when new dependencies are imported mid-session.
 
 ### Solution 1: Proactive Scanning to Prevent Waterfalls and Reduce Re-Optimizations
 
@@ -46,7 +46,13 @@ For a detailed explanation of the scanner's implementation and the rationale beh
 
 Instead of feeding hundreds of individual files to `optimizeDeps`, we consolidate them into **"barrel files."** We create separate barrels for third-party dependencies (which we refer to as **vendor barrels**) and for the application's own source code.
 
-This approach works *with* the bundler's expectations. By providing a small, consolidated list of entry points (the barrel files), we signal a complete and interconnected dependency graph. This allows `esbuild` to perform an efficient, comprehensive optimization pass that avoids both excessive chunking and the need for later re-optimization.
+Vendor barrels are generated in a temporary directory outside of `node_modules` and are exposed to the optimizer through stable package export specifiers (`rwsdk/__vendor_client_barrel` and `rwsdk/__vendor_server_barrel`). The lookup maps for directive modules import these stable specifiers, so Vite pre-bundles the barrels just like any other dependency.
+
+A custom `esbuild` plugin intercepts resolution of the stable specifiers and serves the barrel content **in-memory**, blocking on the scan's completion promise. This guarantees that the dependency optimizer never sees an empty or stale barrel: it can only obtain barrel content after the initial directive scan has finished populating the `clientFiles` / `serverFiles` sets.
+
+For HMR, a matching temporary file is still written so the HMR plugin can invalidate the barrel module in Vite's module graph when a sub-scan discovers new directive files. On the next optimizer pass, the in-memory `onLoad` hook returns the updated content.
+
+This approach works *with* the bundler's expectations. By providing a small, consolidated list of entry points (the barrel files), we signal a complete and interconnected dependency graph. This allows `esbuild` to perform an efficient, comprehensive optimization pass that avoids both excessive chunking and the need for later re-optimization, while stable specifiers keep the pre-bundle cache coherent across server restarts.
 
 #### 3. Synchronized Execution and Assertive Resolution
 
@@ -56,11 +62,23 @@ We solve this with a hybrid blocking and resolution strategy:
 
 1.  **Asynchronous Scan Start:** The scan is initiated early in the `configureServer` hook but is not awaited, allowing the Vite server to start up quickly.
 
-2.  **Optimizer Blocking:** A custom `esbuild` plugin is injected at the *start* of the `optimizeDeps` plugin chain. Its `onResolve` hook intercepts requests for our barrel files and `await`s the scan's completion, pausing the optimizer until the barrels are populated with content.
+2.  **Optimizer Blocking:** A custom `esbuild` plugin is injected at the *start* of the `optimizeDeps` plugin chain. Its `onResolve` hook intercepts requests for app barrel files **and vendor barrel specifiers** and `await`s the scan's completion, pausing the optimizer until the barrels are populated with content.
 
 3.  **Assertive Resolution:** The same `esbuild` plugin intercepts resolution requests for the application's own source files. It then explicitly returns a resolution result, claiming the file and signaling that it is *internal* code that must be scanned for dependencies. This preempts Vite's default behavior and ensures the entire application graph is traversed.
 
-### Solution 2: A Virtual State Module for Resilient State
+### Solution 2: Mid-Session Barrel Invalidation
+
+Even with a proactive scan, a developer can import a new package or module mid-session. When this happens, the HMR pipeline runs a targeted sub-scan from the changed worker file (see [Directive Scanning and Module Resolution](./directiveScanningAndResolution.md)). If the sub-scan discovers new directive files, the framework:
+
+1. Adds the new files to the shared `clientFiles` / `serverFiles` sets.
+2. Regenerates the vendor barrel content from the updated sets.
+3. Invalidates the vendor barrel modules and the `virtual:use-client-lookup.js` / `virtual:use-server-lookup.js` modules in Vite's module graph across the relevant environments.
+
+Because the lookup map still points at the vendor barrel path and the barrel remains in `optimizeDeps`, Vite re-optimizes the updated barrel rather than bypassing optimization for raw `node_modules` files. This keeps the optimized dependency graph consistent while allowing directive files to be discovered after startup.
+
+### Solution 3: A Virtual State Module for Resilient State
+
+For a deeper treatment of this topic, see the [State Module](./stateModule.md) documentation.
 
 To solve the module state loss problem definitively, the framework introduces a centralized, virtual state module that is insulated from Vite's re-optimization process. This module, identified by the specifier `rwsdk/__state`, acts as the single, persistent source of truth for all critical framework-level state.
 

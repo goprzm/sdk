@@ -7,25 +7,25 @@ SUCCESS_FLAG=false # Default to failure. This will be checked by the cleanup tra
 DEPENDENCY_NAME="rwsdk"  # Replace with the actual package name
 
 show_help() {
-  echo "Usage: pnpm release <patch|minor|beta|test|explicit> [--version <string>] [--dry]"
+  echo "Usage: pnpm release <patch|minor|beta|test|canary|explicit> [--version <string>] [--dry]"
   echo
   echo "Automates version bumping, publishing, and dependency updates for $DEPENDENCY_NAME."
-  echo "For safety, only 'patch', 'minor', 'beta', and 'test' bumps can be calculated automatically."
+  echo "For safety, only 'patch', 'minor', 'beta', 'test', and 'canary' bumps can be calculated automatically."
   echo "To release a major or pre-release version, you MUST use the 'explicit' version_type and provide the exact version string with '--version'."
   echo
   echo "Arguments:"
-  echo "  patch|minor|beta|test    Calculates the next version of this type automatically."
-  echo "  explicit                 Requires the '--version' flag to specify the exact version to release."
+  echo "  patch|minor|beta|test|canary  Calculates the next version of this type automatically."
+  echo "  explicit                      Requires the '--version' flag to specify the exact version to release."
   echo ""
   echo "Process:"
-  echo "  1.  Calculates new version (for patch/minor/beta/test) or uses the manual version (for explicit), and updates package.json."
+  echo "  1.  Calculates new version (for patch/minor/beta/test/canary) or uses the manual version (for explicit), and updates package.json."
   echo "  2.  Commits the version change."
   echo "  3.  Builds the package with NODE_ENV=production."
   echo "  4.  Bundles the package into a .tgz tarball using \`npm pack\`."
   echo "  5.  Performs a comprehensive smoke test on the packed tarball:"
   echo "      - Verifies the packed \`dist\` contents match the local build via checksum."
   echo "      - Runs \`npx rw-scripts smoke-tests\` in a temporary project."
-  echo "  6.  If smoke tests pass, publishes the .tgz tarball to npm (beta versions use --tag latest, other prereleases use --tag pre, test builds use --tag test)."
+  echo "  6.  If smoke tests pass, publishes the .tgz tarball to npm (beta versions use --tag latest, other prereleases use --tag pre, test builds use --tag test, canary builds use --tag canary)."
   echo "  7.  On successful publish (for non-prereleases):"
   echo "      - Updates dependencies in the monorepo."
   echo "      - Amends the initial commit with dependency updates."
@@ -35,7 +35,7 @@ show_help() {
   echo "      - Temporary files are cleaned up."
   echo ""
   echo "Options:"
-  echo "  --dry               Simulate the release process without making changes"
+  echo "  --dry, --dry-run    Simulate the release process without making changes"
   echo "  --version <v>       Manually specify a version string. MUST be used with the 'explicit' version_type."
   echo "  --skip-smoke-tests  Bypass the smoke testing step. Use with caution."
   echo "  --help              Show this help message"
@@ -45,6 +45,7 @@ show_help() {
   echo "  pnpm release minor                    # 0.1.1 -> 0.2.0"
   echo "  pnpm release beta                     # 1.0.0-beta.27 -> 1.0.0-beta.28"
   echo "  pnpm release test                     # 1.0.0 -> 1.0.0-test.0 (published as @test)"
+  echo "  pnpm release canary                   # 1.0.0 -> 1.0.0-canary.0 (published as @canary)"
   echo "  pnpm release explicit --version 1.0.0 # Release a major version"
   echo "  pnpm release explicit --version 1.0.0-rc.0 # Release a pre-release"
   exit 0
@@ -52,7 +53,7 @@ show_help() {
 
 validate_args() {
   for arg in "$@"; do
-    if [[ "$arg" == --* && "$arg" != "--dry" && "$arg" != "--help" && "$arg" != "--version" && "$arg" != "--skip-smoke-tests" ]]; then
+    if [[ "$arg" == --* && "$arg" != "--dry" && "$arg" != "--dry-run" && "$arg" != "--help" && "$arg" != "--version" && "$arg" != "--skip-smoke-tests" ]]; then
       echo "Error: Unknown flag '$arg'"
       echo "Use --help to see available options"
       echo ""
@@ -78,7 +79,7 @@ while [[ $i -le $# ]]; do
     --help)
       show_help
       ;;
-    --dry)
+    --dry|--dry-run)
       DRY_RUN=true
       ;;
     --skip-smoke-tests)
@@ -93,7 +94,7 @@ while [[ $i -le $# ]]; do
         show_help
       fi
       ;;
-    patch|minor|beta|test|explicit)
+    patch|minor|beta|test|canary|explicit)
       VERSION_TYPE=$arg
       ;;
   esac
@@ -109,7 +110,7 @@ fi
 
 # Validate required arguments
 if [[ -z "$VERSION_TYPE" ]]; then
-  echo "Error: Version type (patch|minor|beta|test|explicit) is required."
+  echo "Error: Version type (patch|minor|beta|test|canary|explicit) is required."
   echo ""
   show_help
 fi
@@ -130,12 +131,48 @@ if [[ "$VERSION_TYPE" == "test" && -n "$MANUAL_VERSION" ]]; then
   exit 1
 fi
 
+if [[ "$VERSION_TYPE" == "canary" && -n "$MANUAL_VERSION" ]]; then
+  echo "Error: Manual version cannot be specified for 'canary' releases."
+  exit 1
+fi
+
 # After argument validation and before version calculation
 echo -e "\n🔄 Pulling for changes..."
 if [[ "$DRY_RUN" == true ]]; then
   echo "  [DRY RUN] git pull --rebase"
 else
-  git pull --rebase
+  if [[ -n "$AGENT_CI_LOCAL" ]]; then
+    # context(justinvdm, 2026-05-31): agent-ci releases must start from the remote branch tip so we do not
+    # publish from a stale checkout and then lose the final push to a fetch-first rejection.
+    RELEASE_BRANCH_FOR_CHECKOUT="${RWSDK_RELEASE_BRANCH:-main}"
+    echo "  [AGENT CI] Resetting tracked workspace changes and checking out origin/${RELEASE_BRANCH_FOR_CHECKOUT}"
+    git reset --hard HEAD
+    # agent-ci installs a git shim that intercepts fetch/checkout. Use the real git
+    # binary so we can pull the actual remote branch history into the container.
+    GIT_REAL="git"
+    if [[ -x /usr/bin/git.real ]]; then
+      GIT_REAL="/usr/bin/git.real"
+    fi
+    # The container's origin remote points at a localhost mirror. Set it to the
+    # real GitHub URL so fetch and push work against the actual remote.
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    RELEASE_REMOTE_URL_FILE="$REPO_ROOT/.agent-ci/runtime/release-remote-url"
+    RELEASE_REMOTE_URL=""
+    if [[ -f "$RELEASE_REMOTE_URL_FILE" ]]; then
+      RELEASE_REMOTE_URL="$(tr -d '\r\n' < "$RELEASE_REMOTE_URL_FILE")"
+    fi
+    if [[ -z "$RELEASE_REMOTE_URL" ]]; then
+      RELEASE_REMOTE_URL="$($GIT_REAL remote get-url origin 2>/dev/null || true)"
+    fi
+    if [[ -n "$RELEASE_REMOTE_URL" ]]; then
+      echo "  - Updating origin remote to $RELEASE_REMOTE_URL"
+      $GIT_REAL remote set-url origin "$RELEASE_REMOTE_URL"
+    fi
+    $GIT_REAL fetch origin "$RELEASE_BRANCH_FOR_CHECKOUT" --tags
+    $GIT_REAL checkout -B "$RELEASE_BRANCH_FOR_CHECKOUT" "origin/$RELEASE_BRANCH_FOR_CHECKOUT"
+  else
+    git pull --rebase
+  fi
 fi
 
 echo -e "\n📦 Making sure dependencies are up to date..."
@@ -152,10 +189,76 @@ fi
 NODE_ENV=production pnpm build
 
 CURRENT_VERSION=$(npm pkg get version | tr -d '"')
+RELEASE_BRANCH="${RWSDK_RELEASE_BRANCH:-$(git branch --show-current 2>/dev/null || true)}"
+if [[ -z "$RELEASE_BRANCH" ]]; then
+  RELEASE_BRANCH="HEAD"
+fi
 
-# Validate that patch/minor/major cannot be used when currently in a pre-release (excluding test)
+echo "  Release branch: $RELEASE_BRANCH"
+
+# context(justinvdm, 2026-05-06): Canary releases roll back the version commit after publish, so package.json is not a reliable source for the next canary number.
+get_latest_canary_version() {
+  local candidates=()
+  local local_tags gh_tags remote_tags repo_url repo_slug
+
+  mapfile -t local_tags < <(git tag --list 'v*canary.*' | sed 's#^v##')
+  for tag in "${local_tags[@]}"; do
+    if [[ -n "$tag" ]]; then
+      candidates+=("$tag")
+    fi
+  done
+
+  if command -v gh >/dev/null 2>&1; then
+    repo_url=$(git remote get-url origin 2>/dev/null || true)
+    case "$repo_url" in
+      https://github.com/*)
+        repo_slug="${repo_url#https://github.com/}"
+        repo_slug="${repo_slug%.git}"
+        ;;
+      git@github.com:*)
+        repo_slug="${repo_url#git@github.com:}"
+        repo_slug="${repo_slug%.git}"
+        ;;
+      *)
+        repo_slug="${GITHUB_REPOSITORY:-redwoodjs/sdk}"
+        ;;
+    esac
+
+    if [[ -n "$repo_slug" ]]; then
+      mapfile -t gh_tags < <(gh api "repos/$repo_slug/git/matching-refs/tags/v" --paginate --jq '.[].ref' | grep -- '-canary\.' | sed 's#refs/tags/v##')
+      for tag in "${gh_tags[@]}"; do
+        if [[ -n "$tag" ]]; then
+          candidates+=("$tag")
+        fi
+      done
+    fi
+  fi
+
+  mapfile -t remote_tags < <(git ls-remote --tags origin 'refs/tags/v*canary.*' | awk '{print $2}' | grep -v '\^{}' | sed 's#refs/tags/v##')
+  for tag in "${remote_tags[@]}"; do
+    if [[ -n "$tag" ]]; then
+      candidates+=("$tag")
+    fi
+  done
+
+  if [[ ${#candidates[@]} -gt 0 ]]; then
+    printf '%s\n' "${candidates[@]}" | sort -V | tail -n 1
+  fi
+}
+
+increment_canary_version() {
+  local version="$1"
+
+  if [[ "$version" =~ ^(.*)-canary\.([0-9]+)$ ]]; then
+    local base_version="${BASH_REMATCH[1]}"
+    local canary_number="${BASH_REMATCH[2]}"
+    echo "$base_version-canary.$((canary_number + 1))"
+  fi
+}
+
+# Validate that patch/minor/major cannot be used when currently in a pre-release (excluding test and canary)
 if [[ "$VERSION_TYPE" == "patch" || "$VERSION_TYPE" == "minor" || "$VERSION_TYPE" == "major" ]]; then
-  if [[ "$CURRENT_VERSION" == *"-"* && "$CURRENT_VERSION" != *"-test."* ]]; then
+  if [[ "$CURRENT_VERSION" == *"-"* && "$CURRENT_VERSION" != *"-test."* && "$CURRENT_VERSION" != *"-canary."* ]]; then
     echo "Error: Cannot use '$VERSION_TYPE' version type when current version is a pre-release ($CURRENT_VERSION)."
     echo "To release a major version after a pre-release, use 'explicit' version type and specify the exact version."
     exit 1
@@ -175,6 +278,38 @@ elif [[ "$VERSION_TYPE" == "test" ]]; then
     BASE_VERSION="$CURRENT_VERSION"
   fi
   NEW_VERSION="$BASE_VERSION-test.$TIMESTAMP"
+elif [[ "$VERSION_TYPE" == "canary" ]]; then
+  if [[ "$RELEASE_BRANCH" == "main" ]]; then
+    if [[ "$CURRENT_VERSION" =~ ^(.*)-canary\.([0-9]+)$ ]]; then
+      BASE_VERSION="${BASH_REMATCH[1]}"
+    else
+      BASE_VERSION="$CURRENT_VERSION"
+    fi
+    NEW_VERSION="$BASE_VERSION-canary.0"
+  else
+    CURRENT_CANARY_VERSION=""
+    if [[ "$CURRENT_VERSION" =~ ^(.*)-canary\.([0-9]+)$ ]]; then
+      CURRENT_CANARY_VERSION="$CURRENT_VERSION"
+    fi
+
+    LATEST_CANARY_VERSION="$(get_latest_canary_version)"
+    CANDIDATE_CANARY_VERSIONS=()
+
+    if [[ -n "$CURRENT_CANARY_VERSION" ]]; then
+      CANDIDATE_CANARY_VERSIONS+=("$CURRENT_CANARY_VERSION")
+    fi
+
+    if [[ -n "$LATEST_CANARY_VERSION" ]]; then
+      CANDIDATE_CANARY_VERSIONS+=("$LATEST_CANARY_VERSION")
+    fi
+
+    if [[ ${#CANDIDATE_CANARY_VERSIONS[@]} -gt 0 ]]; then
+      NEWEST_CANARY_VERSION=$(printf '%s\n' "${CANDIDATE_CANARY_VERSIONS[@]}" | sort -V | tail -n 1)
+      NEW_VERSION="$(increment_canary_version "$NEWEST_CANARY_VERSION")"
+    else
+      NEW_VERSION="$CURRENT_VERSION-canary.0"
+    fi
+  fi
 elif [[ "$VERSION_TYPE" == "beta" ]]; then
   # Handle beta version bumping: 1.0.0-beta.27 -> 1.0.0-beta.28
   if [[ "$CURRENT_VERSION" =~ ^(.*)-beta\.([0-9]+)$ ]]; then
@@ -191,7 +326,16 @@ else
   NEW_VERSION=$(npx semver -i "$VERSION_TYPE" "$CURRENT_VERSION")
 fi
 
+# Detect canary versions regardless of how they were specified (e.g. explicit --version 1.3.0-canary.0)
+IS_CANARY_VERSION=false
+if [[ "$NEW_VERSION" == *"-canary."* ]]; then
+  IS_CANARY_VERSION=true
+fi
+
 echo -e "\n📦 Planning version bump to $NEW_VERSION ($VERSION_TYPE)..."
+if [[ "$IS_CANARY_VERSION" == true ]]; then
+  echo "  (Detected as canary release)"
+fi
 if [[ "$DRY_RUN" == true ]]; then
   echo "  [DRY RUN] sed -i.bak \"s/\\\"version\\\": \\\"[^\\\"]*\\\"/\\\"version\\\": \\\"$NEW_VERSION\\\"/\" package.json && rm package.json.bak"
   echo "  [DRY RUN] Git commit version change"
@@ -256,7 +400,12 @@ else
   # todo(justinvdm, 11 Aug 2025): Fix style test flakiness
   # Pass the tarball path to the smoke test environment
   export RWSKD_SMOKE_TEST_TARBALL_PATH="$TARBALL_PATH"
-  if ! pnpm smoke-test --artifact-dir="$TEMP_DIR/artifacts" --skip-style-tests; then
+  SMOKE_TEST_ARGS=(--artifact-dir="$TEMP_DIR/artifacts" --skip-style-tests)
+  if [[ "${CI:-}" == "true" || "${CI:-}" == "1" || -n "${GITHUB_ACTIONS:-}" ]]; then
+    SMOKE_TEST_ARGS+=(--ci)
+    export GITHUB_EVENT_NAME="pull_request"
+  fi
+  if ! pnpm smoke-test "${SMOKE_TEST_ARGS[@]}"; then
     echo "  ❌ Smoke tests failed."
     exit 1
   fi
@@ -264,39 +413,56 @@ else
 fi
 
 echo -e "\n🚀 Publishing version $NEW_VERSION..."
+PUBLISH_ALREADY_DONE=false
+if npm view "${DEPENDENCY_NAME}@${NEW_VERSION}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+  PUBLISH_ALREADY_DONE=true
+  echo "  ℹ️  ${DEPENDENCY_NAME}@${NEW_VERSION} is already on npm; skipping publish."
+fi
 if [[ "$DRY_RUN" == true ]]; then
   if [[ "$VERSION_TYPE" == "test" ]]; then
     echo "  [DRY RUN] npm publish '$TARBALL_PATH' --tag test"
+  elif [[ "$VERSION_TYPE" == "canary" || "$IS_CANARY_VERSION" == true ]]; then
+    echo "  [DRY RUN] npm publish '$TARBALL_PATH' --tag canary"
   elif [[ "$NEW_VERSION" == *"-beta."* ]]; then
     echo "  [DRY RUN] npm publish '$TARBALL_PATH' --tag latest"
-  elif [[ "$NEW_VERSION" == *"-"* ]]; then
+  elif [[ "$NEW_VERSION" == *"-*" ]]; then
     echo "  [DRY RUN] npm publish '$TARBALL_PATH' --tag pre"
   else
     echo "  [DRY RUN] npm publish '$TARBALL_PATH'"
   fi
+elif [[ "$PUBLISH_ALREADY_DONE" == true ]]; then
+  echo "  ✅ Publish already completed earlier."
 else
-  PUBLISH_CMD="npm publish \"$TARBALL_PATH\""
+  PUBLISH_CMD=(env npm_config_browser=false npm publish "$TARBALL_PATH")
   if [[ "$VERSION_TYPE" == "test" ]]; then
-    PUBLISH_CMD="$PUBLISH_CMD --tag test"
+    PUBLISH_CMD+=(--tag test)
+  elif [[ "$VERSION_TYPE" == "canary" || "$IS_CANARY_VERSION" == true ]]; then
+    PUBLISH_CMD+=(--tag canary)
   elif [[ "$NEW_VERSION" == *"-beta."* ]]; then
-    PUBLISH_CMD="$PUBLISH_CMD --tag latest"
-  elif [[ "$NEW_VERSION" == *"-"* ]]; then
+    PUBLISH_CMD+=(--tag latest)
+  elif [[ "$NEW_VERSION" == *"-*" ]]; then
     # Other pre-releases should use the 'pre' dist-tag
-    PUBLISH_CMD="$PUBLISH_CMD --tag pre"
+    PUBLISH_CMD+=(--tag pre)
   fi
-  if ! eval $PUBLISH_CMD; then
-    echo -e "\n❌ Publish failed. Rolling back version commit..."
+
+  printf '  [PUBLISH] %q ' "${PUBLISH_CMD[@]}"
+  printf '\n'
+  PUBLISH_CMD_STR=$(printf '%q ' "${PUBLISH_CMD[@]}")
+  if script -q -e -c "$PUBLISH_CMD_STR" /dev/null; then
+    echo "  ✅ Published successfully."
+  else
+    echo ""
+    echo "  ❌ Publish failed."
     git reset --hard HEAD~1
     # The trap will clean up the tarball
     exit 1
   fi
-  echo "  ✅ Published successfully."
 fi
 
 echo -e "\n💾 Pushing commit and tag..."
 if [[ "$DRY_RUN" == true ]]; then
   echo "  [DRY RUN] Git operations:"
-  if [[ "$VERSION_TYPE" == "test" ]]; then
+  if [[ "$VERSION_TYPE" == "test" || "$VERSION_TYPE" == "canary" || "$IS_CANARY_VERSION" == true ]]; then
     echo "    - Tag: $TAG_NAME"
     echo "    - Push tag $TAG_NAME to remote"
     echo "    - Reset branch to previous commit (commit will be on remote via tag)"
@@ -306,12 +472,30 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "    - Push: origin with tags"
   fi
 else
-  if [[ "$VERSION_TYPE" == "test" ]]; then
-    echo "  - Creating tag for test release..."
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  RELEASE_REMOTE_URL_FILE="$REPO_ROOT/.agent-ci/runtime/release-remote-url"
+  RELEASE_REMOTE_URL=""
+  if [[ -f "$RELEASE_REMOTE_URL_FILE" ]]; then
+    RELEASE_REMOTE_URL="$(tr -d '\r\n' < "$RELEASE_REMOTE_URL_FILE")"
+    rm -f "$RELEASE_REMOTE_URL_FILE"
+  fi
+  if [[ -z "$RELEASE_REMOTE_URL" ]]; then
+    RELEASE_REMOTE_URL="$(git remote get-url origin 2>/dev/null || true)"
+  fi
+  if [[ -n "$RELEASE_REMOTE_URL" ]]; then
+    echo "  - Updating origin remote to $RELEASE_REMOTE_URL"
+    git remote set-url origin "$RELEASE_REMOTE_URL"
+  fi
+  if command -v gh >/dev/null 2>&1; then
+    gh auth setup-git >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$VERSION_TYPE" == "test" || "$VERSION_TYPE" == "canary" || "$IS_CANARY_VERSION" == true ]]; then
+    echo "  - Creating tag for canary release..."
     git tag "$TAG_NAME"
     echo "  - Pushing tag to remote..."
     git push origin "$TAG_NAME"
-    echo "  - Rolling back local commit for test release. The commit is available via the remote tag."
+    echo "  - Rolling back local commit for canary release. The commit is available via the remote tag."
     git reset --hard HEAD~1
   else
     # As a final safety measure, check for and discard any remaining unstaged changes
@@ -323,7 +507,7 @@ else
       git stash drop
     fi
     git tag "$TAG_NAME"
-    git push origin main
+    git push origin "$RELEASE_BRANCH"
     git push origin "$TAG_NAME"
   fi
 fi

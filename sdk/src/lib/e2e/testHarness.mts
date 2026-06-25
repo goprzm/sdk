@@ -19,6 +19,8 @@ import {
   DEV_SERVER_TIMEOUT,
   HYDRATION_TIMEOUT,
   INSTALL_DEPENDENCIES_RETRIES,
+  IS_CI,
+  IS_PULL_REQUEST,
   PUPPETEER_TIMEOUT,
   SETUP_PLAYGROUND_ENV_TIMEOUT,
   SETUP_WAIT_TIMEOUT,
@@ -31,6 +33,7 @@ import {
   deleteD1Database,
   deleteWorker,
   isRelatedToTest,
+  runPreviewServer,
   runRelease,
 } from "./release.mjs";
 import { setupTarballEnvironment } from "./tarball.mjs";
@@ -69,6 +72,19 @@ interface DeploymentInstance {
   resourceUniqueKey: string;
   projectDir: string;
   cleanup: () => Promise<void>;
+  redeploy: () => Promise<void>;
+}
+
+function getProjectBasePort(projectDir: string): number {
+  // Spread concurrent playground previews across a wide port range so
+  // different playgrounds are unlikely to collide. Each playground still
+  // reuses the same port for redeploys within a single test file.
+  const name = basename(projectDir);
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return 4173 + (hash % 1000);
 }
 
 // Environment variable flags for skipping tests
@@ -329,6 +345,21 @@ export function createDevServer() {
         throw new Error("Dev server tests are skipped via RWSDK_SKIP_DEV=1");
       }
 
+      // Reuse the global dev server when it is for the same project directory.
+      // This avoids spawning multiple Vite/Cloudflare dev servers in the same
+      // project (which compete for the same inspector port, etc.).
+      if (globalDevInstance && globalDevInstance.projectDir === projectDir) {
+        instance = globalDevInstance;
+        return instance;
+      }
+      if (globalDevInstancePromise) {
+        const globalInstance = await globalDevInstancePromise;
+        if (globalInstance && globalInstance.projectDir === projectDir) {
+          instance = globalInstance;
+          return instance;
+        }
+      }
+
       const devResult = await pollValue(
         () => runDevServer(packageManager, projectDir),
         {
@@ -366,7 +397,57 @@ export function createDeployment() {
     );
   }
   const { projectDir } = globalDeployPlaygroundEnv;
+  const packageManager =
+    (process.env.PACKAGE_MANAGER as "pnpm" | "npm" | "yarn") || "pnpm";
   let instance: DeploymentInstance | null = null;
+  let previewStop: (() => Promise<void>) | null = null;
+  let previewPort: number | null = null;
+
+  const makeRedeploy = (): (() => Promise<void>) => async () => {
+    if (!instance) {
+      throw new Error("Deployment not started");
+    }
+
+    if (IS_PULL_REQUEST) {
+      if (!previewStop || previewPort == null) {
+        throw new Error("No preview server to redeploy");
+      }
+      await previewStop();
+      const newPreview = await runPreviewServer(
+        packageManager,
+        projectDir,
+        previewPort,
+      );
+      previewStop = newPreview.stopPreview;
+      previewPort = newPreview.port;
+      instance.url = newPreview.url;
+      return;
+    }
+
+    const deployResult = await runRelease(
+      projectDir,
+      projectDir,
+      instance.resourceUniqueKey,
+    );
+
+    await poll(
+      async () => {
+        try {
+          const response = await fetch(deployResult.url);
+          const body = await response.text();
+          return body.includes("__RWSDK_CONTEXT");
+        } catch (e) {
+          return false;
+        }
+      },
+      {
+        timeout: DEPLOYMENT_CHECK_TIMEOUT,
+      },
+    );
+
+    instance.url = deployResult.url;
+    instance.workerName = deployResult.workerName;
+  };
 
   return {
     projectDir,
@@ -377,18 +458,51 @@ export function createDeployment() {
         throw new Error("Deployment tests are skipped via RWSDK_SKIP_DEPLOY=1");
       }
 
+      const dirName = basename(projectDir);
+      // Match formats: {projectName}-t-{hash}, {projectName}-test-{hash}, or {projectName}-e2e-test-{hash}
+      const match =
+        dirName.match(/-t-([a-f0-9]+)$/) ||
+        dirName.match(/-test-([a-f0-9]+)$/) ||
+        dirName.match(/-e2e-test-([a-f0-9]+)$/);
+      const resourceUniqueKey = match
+        ? match[1]
+        : Math.random().toString(36).substring(2, 15);
+
+      if (IS_PULL_REQUEST) {
+        console.log("PR mode detected — using local preview instead of deploy");
+        const basePort = getProjectBasePort(projectDir);
+        const previewResult = await runPreviewServer(
+          packageManager,
+          projectDir,
+          basePort,
+        );
+        previewStop = previewResult.stopPreview;
+        previewPort = previewResult.port;
+
+        instance = {
+          url: previewResult.url,
+          workerName: `preview-${resourceUniqueKey}`,
+          resourceUniqueKey,
+          projectDir,
+          cleanup: async () => {
+            await previewResult.stopPreview().catch((error) => {
+              console.warn(
+                `Warning: Background preview cleanup failed: ${
+                  (error as Error).message
+                }`,
+              );
+            });
+            return Promise.resolve();
+          },
+          redeploy: makeRedeploy(),
+        };
+
+        deploymentInstances.push(instance);
+        return instance;
+      }
+
       const newInstance = await pollValue(
         async () => {
-          const dirName = basename(projectDir);
-          // Match formats: {projectName}-t-{hash}, {projectName}-test-{hash}, or {projectName}-e2e-test-{hash}
-          const match =
-            dirName.match(/-t-([a-f0-9]+)$/) ||
-            dirName.match(/-test-([a-f0-9]+)$/) ||
-            dirName.match(/-e2e-test-([a-f0-9]+)$/);
-          const resourceUniqueKey = match
-            ? match[1]
-            : Math.random().toString(36).substring(2, 15);
-
           const deployResult = await runRelease(
             projectDir,
             projectDir,
@@ -446,6 +560,7 @@ export function createDeployment() {
             resourceUniqueKey,
             projectDir: projectDir,
             cleanup,
+            redeploy: makeRedeploy(),
           };
         },
         {
@@ -460,6 +575,7 @@ export function createDeployment() {
           },
         },
       );
+      instance = newInstance;
       deploymentInstances.push(newInstance);
       return newInstance;
     },

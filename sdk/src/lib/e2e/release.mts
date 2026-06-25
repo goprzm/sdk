@@ -3,14 +3,61 @@ import { execaCommand } from "execa";
 import { existsSync, readFileSync } from "fs";
 import { pathExists } from "fs-extra";
 import * as fs from "fs/promises";
+import { createConnection } from "node:net";
 import { parse as parseJsonc } from "jsonc-parser";
 import { setTimeout } from "node:timers/promises";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import { $ } from "../../lib/$.mjs";
+import { checkServerUp } from "./browser.mjs";
 import { extractLastJson, parseJson } from "../../lib/jsonUtils.mjs";
-import { IS_DEBUG_MODE } from "./constants.mjs";
+import { IS_DEBUG_MODE, PREVIEW_SERVER_TIMEOUT } from "./constants.mjs";
 
 const log = debug("rwsdk:e2e:release");
+
+function isPortFree(port: number, host = "localhost"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection(port, host);
+    let settled = false;
+
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+
+    socket.once("connect", () => finish(false));
+    socket.once("error", (err: any) => {
+      finish(err.code === "ECONNREFUSED");
+    });
+    socket.setTimeout(300, () => finish(true));
+  });
+}
+
+async function findFreePort(startingAt = 4173): Promise<number> {
+  for (let port = startingAt; port < startingAt + 100; port++) {
+    if (await isPortFree(port)) {
+      return port;
+    }
+  }
+  throw new Error(
+    `Could not find a free port between ${startingAt} and ${startingAt + 99}`,
+  );
+}
+
+async function waitForPortFree(
+  port: number,
+  timeoutMs = 10000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await isPortFree(port)) {
+      return;
+    }
+    await setTimeout(200);
+  }
+  throw new Error(`Port ${port} did not become free within ${timeoutMs}ms`);
+}
 
 /**
  * Find wrangler cache by searching up the directory tree for node_modules/.cache/wrangler
@@ -537,6 +584,132 @@ export async function runRelease(
     log("ERROR: Failed to run release command: %O", error);
     throw error;
   }
+}
+
+/**
+ * Run a local production preview server (build + preview) and return the URL.
+ */
+export async function runPreviewServer(
+  packageManager: string = "pnpm",
+  cwd?: string,
+  preferredPort?: number,
+): Promise<{ url: string; stopPreview: () => Promise<void>; port: number }> {
+  console.log("🚀 Building for production preview...");
+
+  const pm = packageManager === "yarn-classic" ? "yarn" : packageManager;
+
+  await $(pm, ["run", "build"], {
+    cwd: cwd || process.cwd(),
+    stdio: "pipe",
+    env: { ...process.env, NODE_ENV: "production" },
+  });
+
+  console.log("✅ Build complete. Starting preview server...");
+
+  // Pick a port. If the caller asked for a specific port (e.g. a redeploy
+  // wants to reuse the previous port), try that first and wait briefly for
+  // the old process to release it. If it is still occupied, fall back to a
+  // free port rather than failing — deterministic port assignment can collide
+  // between different playground test files.
+  let port: number;
+  if (preferredPort != null) {
+    if (await isPortFree(preferredPort)) {
+      port = preferredPort;
+    } else {
+      try {
+        await waitForPortFree(preferredPort, 3000);
+        port = preferredPort;
+      } catch {
+        port = await findFreePort(preferredPort + 1);
+      }
+    }
+  } else {
+    port = await findFreePort(4173);
+  }
+
+  let previewProcess: any = null;
+  let isErrorExpected = false;
+
+  const stopPreview = async () => {
+    isErrorExpected = true;
+    if (!previewProcess || !previewProcess.pid) {
+      return;
+    }
+    console.log("Stopping preview server...");
+    if (process.platform !== "win32") {
+      try {
+        process.kill(-previewProcess.pid, "SIGKILL");
+      } catch {}
+    }
+    await previewProcess.catch(() => {});
+    console.log("Preview server stopped");
+  };
+
+  previewProcess = $(pm, ["run", "preview", "--port", String(port), "--strictPort"], {
+    all: true,
+    detached: process.platform !== "win32",
+    cleanup: true,
+    forceKillAfterTimeout: 2000,
+    cwd: cwd || process.cwd(),
+    env: { ...process.env, NODE_ENV: "production" },
+    stdio: "pipe",
+  });
+
+  previewProcess.all?.on("data", (data: Buffer) => {
+    if (IS_DEBUG_MODE) {
+      process.stdout.write(data.toString());
+    }
+  });
+  previewProcess.catch((error: any) => {
+    if (!isErrorExpected) {
+      log("Preview server process exited unexpectedly: %O", error);
+    }
+  });
+
+  const ensurePreviewDeployConfig = async () => {
+    const deployConfigPath = resolve(cwd || process.cwd(), ".wrangler/deploy/config.json");
+    if (await pathExists(deployConfigPath)) {
+      return;
+    }
+
+    let workerConfigPath: string | null = null;
+    for (const candidate of ["wrangler.jsonc", "wrangler.json"]) {
+      const resolvedCandidate = resolve(cwd || process.cwd(), candidate);
+      if (await pathExists(resolvedCandidate)) {
+        workerConfigPath = resolvedCandidate;
+        break;
+      }
+    }
+
+    if (!workerConfigPath) {
+      throw new Error(
+        `Unable to create preview deploy config because no wrangler.jsonc or wrangler.json was found in ${cwd || process.cwd()}`,
+      );
+    }
+
+    await fs.mkdir(dirname(deployConfigPath), { recursive: true });
+    const deployConfig = {
+      configPath: relative(dirname(deployConfigPath), workerConfigPath),
+      auxiliaryWorkers: [],
+    };
+    await fs.writeFile(deployConfigPath, JSON.stringify(deployConfig, null, 2));
+  };
+
+  await ensurePreviewDeployConfig();
+
+  // context(justinvdm, 2026-05-13): Give the CI preview path the same
+  // readiness budget as the dev server so local agent-ci runs can absorb build
+  // and startup latency without falling back to Cloudflare.
+  const serverUrl = `http://localhost:${port}`;
+  await checkServerUp(
+    serverUrl,
+    "/__debug",
+    Math.max(1, Math.ceil(PREVIEW_SERVER_TIMEOUT / 2000)),
+    false,
+  );
+  console.log(`✅ Preview server started at ${serverUrl}`);
+
+  return { url: serverUrl, stopPreview, port };
 }
 
 /**
