@@ -73,11 +73,13 @@ export const configPlugin = ({
         ],
         exclude: [],
         entries: [workerEntryPathname],
-        esbuildOptions: {
-          jsx: "automatic",
-          jsxImportSource: "react",
-          define: {
-            "process.env.NODE_ENV": JSON.stringify(mode),
+        rolldownOptions: {
+          transform: {
+            jsx: "react-jsx",
+            define: {
+              "process.env.NODE_ENV": JSON.stringify(mode),
+              "__webpack_require__": "globalThis.__webpack_require__",
+            },
           },
         },
       },
@@ -94,6 +96,9 @@ export const configPlugin = ({
       appType: "custom",
       mode,
       logLevel: silent ? "silent" : "info",
+      resolve: {
+        tsconfigPaths: true,
+      },
       build: {
         minify: mode !== "development",
         sourcemap,
@@ -110,7 +115,7 @@ export const configPlugin = ({
           build: {
             outDir: resolve(projectRootDir, "dist", "client"),
             manifest: true,
-            rollupOptions: {
+            rolldownOptions: {
               input: [],
             },
           },
@@ -129,12 +134,13 @@ export const configPlugin = ({
               "rwsdk/use-synced-state/client",
             ],
             entries: [],
-            esbuildOptions: {
-              jsx: "automatic",
-              jsxImportSource: "react",
-              plugins: [],
-              define: {
-                "process.env.NODE_ENV": JSON.stringify(mode),
+            rolldownOptions: {
+              transform: {
+                jsx: "react-jsx",
+                define: {
+                  "process.env.NODE_ENV": JSON.stringify(mode),
+                  "__webpack_require__": "globalThis.__webpack_require__",
+                },
               },
             },
           },
@@ -167,12 +173,13 @@ export const configPlugin = ({
               "rwsdk/realtime/worker",
               "rwsdk/use-synced-state/client",
             ],
-            esbuildOptions: {
-              jsx: "automatic",
-              jsxImportSource: "react",
-              plugins: [],
-              define: {
-                "process.env.NODE_ENV": JSON.stringify(mode),
+            rolldownOptions: {
+              transform: {
+                jsx: "react-jsx",
+                define: {
+                  "process.env.NODE_ENV": JSON.stringify(mode),
+                  "__webpack_require__": "globalThis.__webpack_require__",
+                },
               },
             },
           },
@@ -189,7 +196,7 @@ export const configPlugin = ({
               fileName: () => path.basename(INTERMEDIATE_SSR_BRIDGE_PATH),
             },
             outDir: path.dirname(INTERMEDIATE_SSR_BRIDGE_PATH),
-            rollupOptions: {
+            rolldownOptions: {
               output: {
                 // context(justinvdm, 15 Sep 2025): The SSR bundle is a
                 // pre-compiled artifact. When the linker pass bundles it into
@@ -204,7 +211,7 @@ export const configPlugin = ({
                 // context(justinvdm, 19 Nov 2025): We use a custom plugin
                 // (ssrBridgeWrapPlugin) to intelligently inject the IIFE *after*
                 // any top-level external imports, ensuring they remain valid.
-                inlineDynamicImports: true,
+                codeSplitting: false,
               },
               plugins: [ssrBridgeWrapPlugin()],
             },

@@ -76,3 +76,6 @@ This collection of documents provides a high-level overview of the core architec
 
 - [**Smoke Testing Strategy for Package Manager Compatibility**](./smokeTestingStrategy.md)
   This document details the strategy for our smoke tests, which are designed to ensure the SDK functions correctly across various package managers and environments. It explains why we use a tarball-based testing approach instead of more common monorepo linking techniques.
+
+- [**Vite 7 Compatibility Shim**](./vite7Compat.md)
+  Explains how the SDK supports both Vite 8 and Vite 7 from a single Vite-8-native plugin codebase. It covers the runtime translation of Rolldown config and plugins into the esbuild/Rollup equivalents that Vite 7 understands.

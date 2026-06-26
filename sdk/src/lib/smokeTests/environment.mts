@@ -17,6 +17,7 @@ export async function setupTestEnvironment(
   const tarballEnv = await setupTarballEnvironment({
     projectDir: options.projectDir,
     packageManager: options.packageManager,
+    viteVersion: options.viteVersion,
   });
 
   const resources: TestResources = {

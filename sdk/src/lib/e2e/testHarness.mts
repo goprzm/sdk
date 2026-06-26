@@ -231,6 +231,11 @@ export interface SetupPlaygroundEnvironmentOptions {
    * @default true
    */
   autoStartDevServer?: boolean;
+  /**
+   * Major Vite version to test against. When set to 7, the test project
+   * is patched to use Vite 7 + @vitejs/plugin-react 5.
+   */
+  viteVersion?: number;
 }
 
 /**
@@ -248,9 +253,15 @@ export function setupPlaygroundEnvironment(
     dev = true,
     deploy = true,
     autoStartDevServer = true,
+    viteVersion: explicitViteVersion,
   } = typeof options === "string"
     ? { sourceProjectDir: options, autoStartDevServer: true }
     : options;
+
+  const envViteVersion = process.env.RWSDK_VITE_VERSION
+    ? Number(process.env.RWSDK_VITE_VERSION)
+    : undefined;
+  const viteVersion = explicitViteVersion ?? envViteVersion;
   ensureHooksRegistered();
 
   beforeAll(async () => {
@@ -274,6 +285,7 @@ export function setupPlaygroundEnvironment(
         monorepoRoot,
         packageManager:
           (process.env.PACKAGE_MANAGER as "pnpm" | "npm" | "yarn") || "pnpm",
+        viteVersion,
       });
       globalDevPlaygroundEnv = {
         projectDir: devEnv.targetDir,
@@ -300,6 +312,7 @@ export function setupPlaygroundEnvironment(
         monorepoRoot,
         packageManager:
           (process.env.PACKAGE_MANAGER as "pnpm" | "npm" | "yarn") || "pnpm",
+        viteVersion,
       });
       globalDeployPlaygroundEnv = {
         projectDir: deployEnv.targetDir,

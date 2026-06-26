@@ -77,6 +77,12 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
       options.bail = true;
     } else if (arg === "--realtime") {
       options.realtime = true;
+    } else if (arg.startsWith("--vite-version=")) {
+      const version = parseInt(arg.substring(15), 10);
+      if (Number.isNaN(version) || version <= 0) {
+        throw new Error(`Invalid Vite version: ${arg}`);
+      }
+      options.viteVersion = version;
     } else if (arg === "--help" || arg === "-h") {
       // Display help text
       console.log(`
@@ -99,6 +105,7 @@ Options:
   --bail                  Stop on first test failure
   --copy-project          Copy the project to the artifacts directory
   --realtime              Only run realtime smoke tests, skip initial tests
+  --vite-version=VERSION  Major Vite version to test against (default: current, e.g. --vite-version=7)
   --help                  Show this help message
 `);
       process.exit(0);

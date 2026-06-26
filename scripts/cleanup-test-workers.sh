@@ -56,17 +56,41 @@ test_patterns=(
 
 echo "📋 Fetching list of all workers..."
 
-# Get list of all workers
-workers_response=$(curl -s -X GET \
-  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-  "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts")
+# Cloudflare's /workers/scripts endpoint only returns the default/production
+# environment. Test workers created by wrangler/deploy are returned as
+# "services" via /workers/services, and each counts against the account's
+# worker limit. We paginate through services so we don't miss any.
+fetch_all_services() {
+    local page=1
+    local all_services="[]"
+    while true; do
+        local resp
+        resp=$(curl -s -X GET \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/services?per_page=100&page=$page")
 
-# Check if API call was successful
-if ! echo "$workers_response" | jq -e '.success' >/dev/null 2>&1; then
-    echo "❌ Failed to fetch workers list:"
-    echo "$workers_response" | jq -r '.errors[]?.message // "Unknown error"'
-    exit 1
-fi
+        if ! echo "$resp" | jq -e '.success' >/dev/null 2>&1; then
+            echo "❌ Failed to fetch workers services list on page $page:"
+            echo "$resp" | jq -r '.errors[]?.message // "Unknown error"'
+            exit 1
+        fi
+
+        local page_services
+        page_services=$(echo "$resp" | jq '.result // []')
+        all_services=$(echo "$all_services" "$page_services" | jq -s 'add')
+
+        local count
+        count=$(echo "$page_services" | jq 'length')
+        if [ "$count" -lt 100 ]; then
+            break
+        fi
+        page=$((page + 1))
+    done
+    echo "$all_services"
+}
+
+all_services_json=$(fetch_all_services)
+workers_response=$(echo "$all_services_json" | jq '{result: .}')
 
 total_workers=$(echo "$workers_response" | jq -r '.result | length')
 echo "📊 Found $total_workers total workers"

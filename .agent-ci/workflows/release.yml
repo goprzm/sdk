@@ -72,7 +72,16 @@ jobs:
           npx playwright@1.60.0 install --with-deps chromium
 
       - name: Install dependencies
-        run: pnpm install
+        run: |
+          ulimit -n 65536
+          # agent-ci reuses the workspace volume across runs, so stale or
+          # partially-written node_modules can persist. Empty them to avoid
+          # "Already up to date" reports against corrupted files.
+          find . -type d -name node_modules -prune -print0 | \
+            while IFS= read -r -d '' dir; do \
+              find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +; \
+            done
+          pnpm install
 
       - name: Setup .npmrc for publishing
         working-directory: sdk
@@ -148,6 +157,25 @@ jobs:
           elif [[ "$VERSION_TYPE" == "test" || "$VERSION_TYPE" == "canary" ]]; then
             FLAGS="$FLAGS --prerelease"
           fi
+
+          if [[ "$VERSION_TYPE" == "canary" ]]; then
+            # context(justinvdm, 2026-06-04): canary notes should compare against the previous canary tag so the
+            # public "What's changed" section stays on the same prerelease line.
+            BASE_TAG="${TAG_NAME#v}"
+            BASE_TAG="${BASE_TAG%-canary.*}"
+            PREVIOUS_CANARY_TAG=""
+            mapfile -t CANARY_TAGS < <(git tag --list "v${BASE_TAG}-canary.*" --sort=-v:refname)
+            for CANDIDATE_TAG in "${CANARY_TAGS[@]}"; do
+              if [[ "$CANDIDATE_TAG" != "$TAG_NAME" ]]; then
+                PREVIOUS_CANARY_TAG="$CANDIDATE_TAG"
+                break
+              fi
+            done
+            if [[ -n "$PREVIOUS_CANARY_TAG" ]]; then
+              FLAGS="$FLAGS --notes-start-tag $PREVIOUS_CANARY_TAG"
+            fi
+          fi
+
 
           REPO_URL="$(git remote get-url origin)"
           case "$REPO_URL" in

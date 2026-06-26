@@ -12,6 +12,7 @@ set -euo pipefail
 # --no-sync: Disables syncing of the local SDK build to the test project.
 # --artifact-dir: The directory to store test artifacts. Defaults to "smoke-test-artifacts/<starter>".
 # --skip-style-tests: Skips the style-related tests.
+# --vite-version: The major Vite version to test against (e.g., "7").
 #
 # The script will create a temporary project, install the specified starter,
 # install the SDK from a local tarball, and run a series of checks.
@@ -25,6 +26,7 @@ set -euo pipefail
 # --- Argument parsing ---
 STARTER="starter"
 PACKAGE_MANAGER=""
+VITE_VERSION=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -34,6 +36,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       PACKAGE_MANAGER="$2"
+      shift 2
+      ;;
+    --vite-version)
+      if [[ $# -lt 2 ]]; then
+        echo "❌ --vite-version requires a value"
+        exit 1
+      fi
+      VITE_VERSION="$2"
       shift 2
       ;;
     *)
@@ -48,7 +58,7 @@ if [[ -z "$PACKAGE_MANAGER" ]]; then
   exit 1
 fi
 
-echo "🚀 Starting smoke test for '$STARTER' starter with '$PACKAGE_MANAGER'"
+echo "🚀 Starting smoke test for '$STARTER' starter with '$PACKAGE_MANAGER'" ${VITE_VERSION:+"(Vite $VITE_VERSION)"}
 
 # --- Setup ---
 # Get the absolute path of the script's directory
@@ -76,10 +86,22 @@ echo -e "\n🔬 Running smoke tests..."
 ARTIFACT_DIR="$MONOREPO_ROOT/smoke-test-artifacts/$STARTER"
 mkdir -p "$ARTIFACT_DIR"
 
+SMOKE_TEST_ARGS=(
+  --path="$STARTER_PATH"
+  --artifact-dir="$ARTIFACT_DIR"
+  --skip-style-tests
+  --ci
+  --package-manager="$PACKAGE_MANAGER"
+)
+
+if [[ -n "$VITE_VERSION" ]]; then
+  SMOKE_TEST_ARGS+=(--vite-version="$VITE_VERSION")
+fi
+
 # The smoke test handles all project setup, tarball creation, and installation
-if ! pnpm smoke-test --path="$STARTER_PATH" --artifact-dir="$ARTIFACT_DIR" --skip-style-tests --ci --package-manager="$PACKAGE_MANAGER"; then
+if ! pnpm smoke-test "${SMOKE_TEST_ARGS[@]}"; then
   echo "❌ Smoke tests failed."
   exit 1
 fi
 
-echo -e "\n✅ Smoke tests passed for '$STARTER' with '$PACKAGE_MANAGER'!"
+echo -e "\n✅ Smoke tests passed for '$STARTER' with '$PACKAGE_MANAGER'" ${VITE_VERSION:+"on Vite $VITE_VERSION"}!
