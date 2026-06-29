@@ -20,6 +20,13 @@ export function setIdentityInUrl(
   identity: SyncedStateIdentity,
   url: URL,
 ): URL {
+  // context(justinvdm, 29 Jun 2026): No identity extractor was registered, so
+  // nothing needs to be passed to the DO. Skip setting the query param;
+  // getIdentityFromUrl already returns undefined when it is missing.
+  if (identity === undefined) {
+    return url;
+  }
+
   let serialized: string;
   try {
     serialized = JSON.stringify(identity);
