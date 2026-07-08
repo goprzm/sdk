@@ -9,6 +9,17 @@ import { ConfigurableEsbuildOptions } from "./runDirectivesScan.mjs";
 
 import { ssrBridgeWrapPlugin } from "./ssrBridgeWrapPlugin.mjs";
 
+export const SSR_BRIDGE_ROLLDOWN_EXPERIMENTAL = {
+  // Rolldown's lazy barrel optimization can keep code that references imports it
+  // already pruned when `codeSplitting` is false. The SSR bridge intentionally
+  // disables code splitting, so keep lazy barrel off for this build until the
+  // upstream issue is fixed.
+  // See:
+  // - https://github.com/rolldown/rolldown/issues/9691#issuecomment-4666238497
+  // - https://github.com/rolldown/rolldown/issues/9964
+  lazyBarrel: false,
+};
+
 export const configPlugin = ({
   silent,
   projectRootDir,
@@ -34,7 +45,7 @@ export const configPlugin = ({
     // context(justinvdm, 2026-05-06): Only set a sourcemap default if the user
     // hasn't already configured it in their vite config. This lets users opt in
     // or out explicitly while still providing a sensible mode-aware default.
-    const sourcemap = config.build?.sourcemap ?? (mode === "development");
+    const sourcemap = config.build?.sourcemap ?? mode === "development";
 
     const workerConfig: InlineConfig = {
       resolve: {
@@ -70,14 +81,18 @@ export const configPlugin = ({
           "rwsdk/realtime/worker",
           "rwsdk/router",
           "rwsdk/worker",
+          "rwsdk/use-synced-state/worker",
+          "rwsdk/use-synced-state/hibernation/worker",
         ],
         exclude: [],
         entries: [workerEntryPathname],
-        esbuildOptions: {
-          jsx: "automatic",
-          jsxImportSource: "react",
-          define: {
-            "process.env.NODE_ENV": JSON.stringify(mode),
+        rolldownOptions: {
+          transform: {
+            jsx: "react-jsx",
+            define: {
+              "process.env.NODE_ENV": JSON.stringify(mode),
+              __webpack_require__: "globalThis.__webpack_require__",
+            },
           },
         },
       },
@@ -94,6 +109,9 @@ export const configPlugin = ({
       appType: "custom",
       mode,
       logLevel: silent ? "silent" : "info",
+      resolve: {
+        tsconfigPaths: true,
+      },
       build: {
         minify: mode !== "development",
         sourcemap,
@@ -110,7 +128,7 @@ export const configPlugin = ({
           build: {
             outDir: resolve(projectRootDir, "dist", "client"),
             manifest: true,
-            rollupOptions: {
+            rolldownOptions: {
               input: [],
             },
           },
@@ -127,14 +145,16 @@ export const configPlugin = ({
               "rwsdk/router",
               "rwsdk/turnstile",
               "rwsdk/use-synced-state/client",
+              "rwsdk/use-synced-state/hibernation/client",
             ],
             entries: [],
-            esbuildOptions: {
-              jsx: "automatic",
-              jsxImportSource: "react",
-              plugins: [],
-              define: {
-                "process.env.NODE_ENV": JSON.stringify(mode),
+            rolldownOptions: {
+              transform: {
+                jsx: "react-jsx",
+                define: {
+                  "process.env.NODE_ENV": JSON.stringify(mode),
+                  __webpack_require__: "globalThis.__webpack_require__",
+                },
               },
             },
           },
@@ -166,13 +186,15 @@ export const configPlugin = ({
               "rwsdk/realtime/durableObject",
               "rwsdk/realtime/worker",
               "rwsdk/use-synced-state/client",
+              "rwsdk/use-synced-state/hibernation/client",
             ],
-            esbuildOptions: {
-              jsx: "automatic",
-              jsxImportSource: "react",
-              plugins: [],
-              define: {
-                "process.env.NODE_ENV": JSON.stringify(mode),
+            rolldownOptions: {
+              transform: {
+                jsx: "react-jsx",
+                define: {
+                  "process.env.NODE_ENV": JSON.stringify(mode),
+                  __webpack_require__: "globalThis.__webpack_require__",
+                },
               },
             },
           },
@@ -189,7 +211,8 @@ export const configPlugin = ({
               fileName: () => path.basename(INTERMEDIATE_SSR_BRIDGE_PATH),
             },
             outDir: path.dirname(INTERMEDIATE_SSR_BRIDGE_PATH),
-            rollupOptions: {
+            rolldownOptions: {
+              experimental: SSR_BRIDGE_ROLLDOWN_EXPERIMENTAL,
               output: {
                 // context(justinvdm, 15 Sep 2025): The SSR bundle is a
                 // pre-compiled artifact. When the linker pass bundles it into
@@ -204,7 +227,7 @@ export const configPlugin = ({
                 // context(justinvdm, 19 Nov 2025): We use a custom plugin
                 // (ssrBridgeWrapPlugin) to intelligently inject the IIFE *after*
                 // any top-level external imports, ensuring they remain valid.
-                inlineDynamicImports: true,
+                codeSplitting: false,
               },
               plugins: [ssrBridgeWrapPlugin()],
             },

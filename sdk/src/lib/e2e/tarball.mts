@@ -12,6 +12,7 @@ interface SetupTarballOptions {
   projectDir: string;
   monorepoRoot?: string;
   packageManager?: "pnpm" | "npm" | "yarn" | "yarn-classic";
+  viteVersion?: number;
 }
 
 interface TarballEnvironment {
@@ -103,6 +104,7 @@ export async function setupTarballEnvironment({
   projectDir,
   monorepoRoot,
   packageManager = "pnpm",
+  viteVersion,
 }: SetupTarballOptions): Promise<TarballEnvironment> {
   log(`🚀 Setting up tarball environment for ${projectDir}`);
 
@@ -121,6 +123,8 @@ export async function setupTarballEnvironment({
       resourceUniqueKey,
       packageManager,
       monorepoRoot,
+      undefined,
+      viteVersion,
     );
 
     // Copy wrangler cache to improve deployment performance

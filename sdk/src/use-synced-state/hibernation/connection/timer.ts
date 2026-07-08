@@ -1,13 +1,31 @@
-import { manager } from "../state/clientManager.js";
-import { reconnect } from "../reconnect/reconnect.js";
 import { type Connection } from "./types.js";
 
-export const DEAD_CONNECTION_TIMEOUT_MS = 90_000;
+// context(justinvdm, 29 Jun 2026): This timeout applies only to requests that
+// are waiting for a server response, not to idle connections. Hibernation
+// relies on idle sockets being allowed to sleep, so we must not close a socket
+// just because no traffic has arrived.
+export const PENDING_REQUEST_TIMEOUT_MS = 30_000;
 
-export function cleanupConnectionTimers(connection: Connection): void {
-  if (connection.deadConnectionTimer) {
-    clearTimeout(connection.deadConnectionTimer);
-    connection.deadConnectionTimer = null;
+export function startPendingRequestTimer(connection: Connection): void {
+  stopPendingRequestTimer(connection);
+  if (connection.pending.size === 0) {
+    return;
+  }
+  connection.pendingRequestTimer = setTimeout(() => {
+    // We intentionally do not close the socket here. In Cloudflare's
+    // environment a half-open WebSocket is unlikely; the server should
+    // already have sent an error frame for any throw (see server.mts).
+    // Closing would trigger a visible reconnect that looks like the old
+    // idle-timeout symptom. We only reject the pending promises so the
+    // caller is not left hanging forever.
+    rejectPending(connection, "useSyncedState request timed out");
+  }, PENDING_REQUEST_TIMEOUT_MS);
+}
+
+export function stopPendingRequestTimer(connection: Connection): void {
+  if (connection.pendingRequestTimer) {
+    clearTimeout(connection.pendingRequestTimer);
+    connection.pendingRequestTimer = null;
   }
 }
 
@@ -16,25 +34,5 @@ export function rejectPending(connection: Connection, reason: string): void {
     pending.reject(new Error(reason));
   }
   connection.pending.clear();
-}
-
-export function resetDeadConnectionTimer(
-  connection: Connection,
-  endpoint: string,
-): void {
-  if (connection.deadConnectionTimer) {
-    clearTimeout(connection.deadConnectionTimer);
-  }
-  connection.deadConnectionTimer = setTimeout(() => {
-    try {
-      connection.ws.close();
-    } catch {}
-    connection.isOpen = false;
-    rejectPending(connection, "WebSocket timed out");
-    cleanupConnectionTimers(connection);
-    if (manager.getConnection(endpoint) === connection) {
-      manager.deleteConnection(endpoint);
-      reconnect(endpoint);
-    }
-  }, DEAD_CONNECTION_TIMEOUT_MS);
+  stopPendingRequestTimer(connection);
 }

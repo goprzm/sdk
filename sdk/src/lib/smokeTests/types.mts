@@ -29,6 +29,7 @@ export interface SmokeTestOptions {
   skipHmr?: boolean;
   skipStyleTests?: boolean;
   packageManager?: PackageManager;
+  viteVersion?: number;
 }
 
 export interface TestResources {

@@ -6,23 +6,40 @@ import {
   VENDOR_CLIENT_BARREL_EXPORT_PATH,
   VENDOR_SERVER_BARREL_EXPORT_PATH,
 } from "../lib/constants.mjs";
+import { addOptimizeDepsPlugin } from "./addOptimizeDepsPlugin.mjs";
+import {
+  getOptimizeDepsExcludePatternsByEnv,
+  isExcludedFromOptimization,
+  resolveOptimizeDepsExcludesByEnv,
+} from "./resolveOptimizeDepsExcludes.mjs";
 
 export function generateLookupMap({
   files,
   isDev,
   kind,
   exportName,
+  optimizeDepsExclude,
+  projectRootDir,
 }: {
   files: Set<string>;
   isDev: boolean;
   kind: "client" | "server";
   exportName: string;
+  optimizeDepsExclude?: string[];
+  projectRootDir?: string;
 }) {
+  const excludedRoots = optimizeDepsExclude ?? [];
   const s = new MagicString(`
 export const ${exportName} = {
   ${Array.from(files)
     .map((file: string) => {
-      if (file.includes("node_modules") && isDev) {
+      const excluded = isExcludedFromOptimization(
+        file,
+        excludedRoots,
+        projectRootDir,
+      );
+
+      if (file.includes("node_modules") && isDev && !excluded) {
         const barrelPath =
           kind === "client"
             ? VENDOR_CLIENT_BARREL_EXPORT_PATH
@@ -69,6 +86,8 @@ export const createDirectiveLookupPlugin = async ({
   const log = debug(debugNamespace);
   let isDev = false;
   let devServer: ViteDevServer;
+  let optimizeDepsExclude: string[] = [];
+  let excludedRootsByEnv: Record<string, string[]> = {};
 
   log(
     "Initializing %s plugin with projectRootDir=%s",
@@ -78,8 +97,17 @@ export const createDirectiveLookupPlugin = async ({
 
   return {
     name: `rwsdk:${config.pluginName}`,
-    config(_, { command, isPreview }) {
+    config(config, { command, isPreview }) {
       isDev = !isPreview && command === "serve";
+      optimizeDepsExclude = [
+        ...new Set(
+          Object.values(getOptimizeDepsExcludePatternsByEnv(config)).flat(),
+        ),
+      ];
+      excludedRootsByEnv = resolveOptimizeDepsExcludesByEnv(
+        getOptimizeDepsExcludePatternsByEnv(config),
+        projectRootDir,
+      );
       log("Development mode: %s", isDev);
     },
     configureServer(server) {
@@ -99,43 +127,30 @@ export const createDirectiveLookupPlugin = async ({
       }
       log("Configuring environment: env=%s", env);
 
-      viteConfig.optimizeDeps ??= {};
-      viteConfig.optimizeDeps.esbuildOptions ??= {};
-      viteConfig.optimizeDeps.esbuildOptions.plugins ??= [];
-      viteConfig.optimizeDeps.esbuildOptions.plugins.push({
+      const escapedVirtualModuleName = config.virtualModuleName.replace(
+        /[-\/\\^$*+?.()|[\]{}]/g,
+        "\\$&",
+      );
+      const escapedPrefixedModuleName =
+        `/@id/${config.virtualModuleName}`.replace(
+          /[-\/\\^$*+?.()|[\]{}]/g,
+          "\\$&",
+        );
+      const lookupFilter = new RegExp(
+        `^(${escapedVirtualModuleName}|${escapedPrefixedModuleName})\\.js$`,
+      );
+
+      addOptimizeDepsPlugin(viteConfig, {
         name: `rwsdk:${config.pluginName}`,
-        setup(build) {
-          log("Setting up esbuild plugin for %s", config.virtualModuleName);
-
-          // Handle both direct virtual module name and /@id/ prefixed version
-          const escapedVirtualModuleName = config.virtualModuleName.replace(
-            /[-\/\\^$*+?.()|[\]{}]/g,
-            "\\$&",
-          );
-          const escapedPrefixedModuleName =
-            `/@id/${config.virtualModuleName}`.replace(
-              /[-\/\\^$*+?.()|[\]{}]/g,
-              "\\$&",
-            );
-
-          build.onResolve(
-            {
-              filter: new RegExp(
-                `^(${escapedVirtualModuleName}|${escapedPrefixedModuleName})\\.js$`,
-              ),
-            },
-            () => {
-              process.env.VERBOSE &&
-                log(
-                  "Esbuild onResolve: marking %s as external",
-                  config.virtualModuleName,
-                );
-              return {
-                path: `${config.virtualModuleName}.js`,
-                external: true,
-              };
-            },
-          );
+        resolveId(id: string) {
+          if (lookupFilter.test(id)) {
+            process.env.VERBOSE &&
+              log("Marking %s as external", config.virtualModuleName);
+            return {
+              id: `${config.virtualModuleName}.js`,
+              external: true,
+            };
+          }
         },
       });
 
@@ -146,6 +161,7 @@ export const createDirectiveLookupPlugin = async ({
       if (shouldOptimizeForEnv) {
         log("Applying optimizeDeps and aliasing for environment: %s", env);
 
+        viteConfig.optimizeDeps ??= {};
         viteConfig.optimizeDeps.include ??= [];
 
         for (const file of files) {
@@ -233,11 +249,23 @@ export const createDirectiveLookupPlugin = async ({
         const environment = this.environment?.name || "client";
         log("Current environment: %s, isDev: %s", environment, isDev);
 
+        const lookupExcludedRoots =
+          config.kind === "server"
+            ? [...(excludedRootsByEnv.worker ?? [])]
+            : [
+                ...new Set([
+                  ...(excludedRootsByEnv.client ?? []),
+                  ...(excludedRootsByEnv.ssr ?? []),
+                ]),
+              ];
+
         return generateLookupMap({
           files,
           isDev,
           kind: config.kind,
           exportName: config.exportName,
+          optimizeDepsExclude: lookupExcludedRoots,
+          projectRootDir,
         });
       }
     },
