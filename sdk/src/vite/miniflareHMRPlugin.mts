@@ -31,6 +31,25 @@ const log = debug("rwsdk:vite:hmr-plugin");
 
 let hasErrored = false;
 
+// The directive sub-scan (below) only needs to run when a changed file may have
+// introduced a NEW directive-bearing dependency, which can only happen if its
+// imports change. We cache each file's import specifiers so we can skip the
+// (expensive) scan on edits that leave imports untouched. Without this, the full
+// esbuild bundle scan runs on every worker/server save, accumulating memory in
+// the long-lived esbuild service process and blocking HMR.
+const workerScanImportSigs = new Map<string, string>();
+
+export const getImportSignature = (code: string): string => {
+  const specs: string[] = [];
+  const re =
+    /(?:import|export)[^;\n]*?\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) {
+    specs.push((m[1] ?? m[2] ?? m[3]) as string);
+  }
+  return specs.sort().join("\n");
+};
+
 const hasDirective = async (filepath: string, directive: string) => {
   if (!isJsFile(filepath)) {
     return false;
@@ -284,14 +303,33 @@ export const miniflareHMRPlugin = (givenOptions: {
         // becomes a bottleneck, we should look into caching scan results and/or
         // making the sub-scan incremental so we only pay the cost once per new
         // dependency rather than on every unrelated edit.
-        await runDirectivesScan({
-          rootConfig: ctx.server.config,
-          environments: ctx.server.environments,
-          clientFiles,
-          serverFiles,
-          entries: [ctx.file],
-          esbuildOptions: {},
-        });
+        // Only run the (expensive) directive scan when the changed file's
+        // imports have actually changed. Unchanged imports => no new dependency
+        // => no new directive module is reachable, so the scan cannot discover
+        // anything. The file's own directive gain/loss is handled separately
+        // above. This keeps the scan — and the esbuild service memory it
+        // accumulates — from running on every unrelated save.
+        let shouldScan = true;
+        if (isJsFile(ctx.file)) {
+          try {
+            const sig = getImportSignature(await readFile(ctx.file, "utf-8"));
+            shouldScan = workerScanImportSigs.get(ctx.file) !== sig;
+            workerScanImportSigs.set(ctx.file, sig);
+          } catch {
+            shouldScan = true;
+          }
+        }
+
+        if (shouldScan) {
+          await runDirectivesScan({
+            rootConfig: ctx.server.config,
+            environments: ctx.server.environments,
+            clientFiles,
+            serverFiles,
+            entries: [ctx.file],
+            esbuildOptions: {},
+          });
+        }
 
         const clientFilesAfter = clientFiles.size;
         const serverFilesAfter = serverFiles.size;
