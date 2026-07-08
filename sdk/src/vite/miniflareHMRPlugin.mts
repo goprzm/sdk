@@ -231,7 +231,11 @@ export const miniflareHMRPlugin = (givenOptions: {
         ) ?? [],
       );
 
-      const isWorkerUpdate = Boolean(modules);
+      // A file is a worker update only if it is actually in the worker module
+      // graph. `Boolean(modules)` was always true (`Array.from(... ?? [])` is
+      // always an array, empty or not), so every save was treated as a worker
+      // update regardless of whether the file belongs to the worker graph.
+      const isWorkerUpdate = modules.length > 0;
 
       // The worker needs an update, but this is the client environment
       // => Notify for HMR update of any css files imported by in worker, that are also in the client module graph
